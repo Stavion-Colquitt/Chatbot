@@ -6,12 +6,12 @@
 //
 // MEMORY (self-contained):
 //   - Every user message and reply is appended to memory.json next to this file.
-//   - On each turn the backend searches all past turns (across every chat) for
-//     the ones most relevant to the new message and injects them as context.
-//   - This survives restarts. No database, no embeddings, no network.
-//   - Recall is lexical (keyword overlap, length-normalized) -- it matches on
-//     shared words, not paraphrase. That is the tradeoff for "runs anywhere,
-//     installs nothing." Good enough to remember names, facts, decisions, code.
+//   - On each turn the backend searches past turns (scoped by project) for the
+//     ones most relevant to the new message and injects them as context.
+//   - This survives restarts. No database, no npm dependencies.
+//   - Recall is hybrid: BM25 keyword scoring always, plus embedding vectors
+//     when an embedding provider is configured (see HYBRID RECALL below).
+//     With no provider it degrades to keyword-only and still runs anywhere.
 
 const http = require("http");
 const fs = require("fs");
@@ -52,24 +52,168 @@ function saveStore() {
   } catch (e) { console.warn("memory save skipped:", e.message); }
 }
 
-function tokenize(s) {
-  return ((s || "").toLowerCase().match(/[a-z0-9]+/g)) || [];
+// ---------------------------------------------------------------------------
+// HYBRID RECALL: BM25 keyword scoring + embedding vectors, fused
+// VECTOR_WEIGHT (default 0.7) vector / 0.3 keyword. A turn found by both is
+// labelled "hybrid". Vectors live in a sidecar file next to memory.json, so
+// there is still no database and still zero npm dependencies.
+//
+// Embeddings are optional and pluggable. The first one configured wins:
+//   EMBED_API_URL + EMBED_API_KEY  -> any OpenAI-compatible /embeddings endpoint
+//   VOYAGE_API_KEY                 -> Voyage AI
+//   OLLAMA_EMBED_URL               -> local Ollama (e.g. http://localhost:11434)
+//   nothing set                    -> keyword-only recall (BM25), as before
+// EMBED_MODEL overrides the default model for whichever is active. Changing
+// provider or model re-embeds the whole memory in the background on startup.
+// ---------------------------------------------------------------------------
+const VECTOR_FILE      = process.env.VECTOR_FILE || MEMORY_FILE.replace(/\.json$/i, "") + ".vectors.json";
+const EMBED_API_URL    = process.env.EMBED_API_URL || "";
+const EMBED_API_KEY    = process.env.EMBED_API_KEY || "";
+const VOYAGE_KEY       = process.env.VOYAGE_API_KEY || "";
+const OLLAMA_EMBED_URL = process.env.OLLAMA_EMBED_URL || "";
+const VECTOR_WEIGHT    = Number(process.env.VECTOR_WEIGHT || 0.7);
+const VECTOR_MIN       = Number(process.env.VECTOR_MIN || 0.3);   // cosine floor for a vector hit
+const EMBED_BATCH      = 64;
+const EMBED_TIMEOUT    = Number(process.env.EMBED_TIMEOUT_MS || 15000);  // a hung provider must not stall chat
+
+const EMBED = (() => {
+  const m = process.env.EMBED_MODEL || "";
+  if (EMBED_API_URL && EMBED_API_KEY) return { kind: "openai", model: m || "text-embedding-3-small" };
+  if (VOYAGE_KEY)                     return { kind: "voyage", model: m || "voyage-3.5-lite" };
+  if (OLLAMA_EMBED_URL)               return { kind: "ollama", model: m || "nomic-embed-text" };
+  return null;
+})();
+const EMBED_ID = EMBED ? EMBED.kind + ":" + EMBED.model : null;
+
+function unit(arr) {
+  const v = Float32Array.from(arr);
+  let n = 0; for (let i = 0; i < v.length; i++) n += v[i] * v[i];
+  n = Math.sqrt(n) || 1;
+  for (let i = 0; i < v.length; i++) v[i] /= n;
+  return v;
+}
+function dot(a, b) {
+  if (a.length !== b.length) return 0;
+  let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
 }
 
-// length-normalized keyword overlap: turns that share more query words score
-// higher, but long turns don't win just by being long.
-function scoreTurn(turnTokens, querySet) {
-  if (!turnTokens.length) return 0;
-  let hits = 0;
-  const seen = new Set();
-  for (const t of turnTokens) {
-    if (querySet.has(t) && !seen.has(t)) { hits++; seen.add(t); }
+// inputType: "query" | "document" (Voyage uses it; the others ignore it)
+async function embed(texts, inputType) {
+  if (!EMBED || !texts.length) return [];
+  const input = texts.map(t => (t || "").slice(0, 8000));
+  const headers = { "Content-Type": "application/json" };
+  let url, body;
+  if (EMBED.kind === "openai") {
+    url = /\/embeddings$/.test(EMBED_API_URL) ? EMBED_API_URL : EMBED_API_URL.replace(/\/$/, "") + "/embeddings";
+    headers.Authorization = "Bearer " + EMBED_API_KEY;
+    body = { model: EMBED.model, input };
+  } else if (EMBED.kind === "voyage") {
+    url = "https://api.voyageai.com/v1/embeddings";
+    headers.Authorization = "Bearer " + VOYAGE_KEY;
+    body = { model: EMBED.model, input, input_type: inputType };
+  } else {
+    url = /\/api\/embed$/.test(OLLAMA_EMBED_URL) ? OLLAMA_EMBED_URL : OLLAMA_EMBED_URL.replace(/\/$/, "") + "/api/embed";
+    body = { model: EMBED.model, input };
   }
-  if (!hits) return 0;
-  return hits / Math.sqrt(turnTokens.length + 1);
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(EMBED_TIMEOUT) });
+  if (!res.ok) throw new Error("embed " + res.status + ": " + (await res.text()).slice(0, 200));
+  const data = await res.json();
+  const vecs = data.embeddings ||
+    (data.data || []).slice().sort((a, b) => (a.index || 0) - (b.index || 0)).map(d => d.embedding);
+  if (!vecs || vecs.length !== texts.length) throw new Error("embed returned " + (vecs || []).length + " vectors for " + texts.length + " inputs");
+  return vecs.map(unit);
 }
 
-// RECALL: find the most relevant past turns and format them as a context block.
+// Sidecar vector store: { model, vecs: { turnId: base64(Float32Array) } }
+const toB64 = v => Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString("base64");
+const fromB64 = s => { const b = Buffer.from(s, "base64"); return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); };
+
+let vectors = loadVectors();   // Map turnId -> Float32Array (unit length)
+
+function loadVectors() {
+  const map = new Map();
+  if (!EMBED) return map;
+  try {
+    const v = JSON.parse(fs.readFileSync(VECTOR_FILE, "utf8"));
+    if (v && v.model === EMBED_ID && v.vecs) {
+      for (const [id, b64] of Object.entries(v.vecs)) map.set(id, fromB64(b64));
+    } else if (v && v.model) {
+      console.log("embedding model changed (" + v.model + " -> " + EMBED_ID + "), re-embedding memory");
+    }
+  } catch (e) { /* no sidecar yet */ }
+  return map;
+}
+
+function saveVectors() {
+  const live = new Set(store.turns.map(t => t.id));
+  const vecs = {};
+  for (const [id, v] of vectors) {
+    if (live.has(id)) vecs[id] = toB64(v);
+    else vectors.delete(id);                     // turn was trimmed by MEMORY_MAX
+  }
+  try { fs.writeFileSync(VECTOR_FILE, JSON.stringify({ model: EMBED_ID, vecs })); }
+  catch (e) { console.warn("vector save skipped:", e.message); }
+}
+
+// Embed every stored turn that has no vector yet. Runs in the background,
+// one batch at a time, never more than one pass in flight. Covers both the
+// startup backfill and each new turn.
+let indexing = null;
+function indexPending() {
+  if (!EMBED || indexing) return indexing;
+  const run = (async () => {
+    try {
+      for (;;) {
+        const todo = store.turns.filter(t => t.content && !vectors.has(t.id)).slice(0, EMBED_BATCH);
+        if (!todo.length) break;
+        const vecs = await embed(todo.map(t => t.content), "document");
+        todo.forEach((t, i) => vectors.set(t.id, vecs[i]));
+        saveVectors();
+      }
+    } catch (e) { console.warn("embedding paused:", e.message); }
+  })();
+  // clear via .finally (always async) -- clearing inside the body can run
+  // synchronously before this assignment and leave the flag stuck forever
+  indexing = run.finally(() => { indexing = null; });
+  return indexing;
+}
+
+const STOP = new Set(("a an and are as at be but by can do does did for from has have how i if in is it its " +
+  "me my of on or so that the this to was we what when where which who why will with you your").split(" "));
+
+function tokenize(s) {
+  return (((s || "").toLowerCase().match(/[a-z0-9]+/g)) || []).filter(t => !STOP.has(t));
+}
+
+// BM25 over the in-scope pool. Returns Map turnId -> score.
+function bm25(pool, queryTokens) {
+  const out = new Map();
+  const q = [...new Set(queryTokens)];
+  if (!pool.length || !q.length) return out;
+  const docs = pool.map(t => tokenize(t.content));
+  const N = docs.length;
+  const avgdl = docs.reduce((s, d) => s + d.length, 0) / N || 1;
+  const df = new Map();
+  for (const d of docs) for (const w of new Set(d)) df.set(w, (df.get(w) || 0) + 1);
+  const k1 = 1.2, b = 0.75;
+  docs.forEach((d, i) => {
+    if (!d.length) return;
+    const tf = new Map();
+    for (const w of d) tf.set(w, (tf.get(w) || 0) + 1);
+    let s = 0;
+    for (const w of q) {
+      const f = tf.get(w);
+      if (!f) continue;
+      const n = df.get(w);
+      const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+      s += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.length / avgdl));
+    }
+    if (s > 0) out.set(pool[i].id, s);
+  });
+  return out;
+}
+
 // Memory is scoped by project. Chats inside a project can see each other;
 // chats outside it cannot. Unassigned chats form their own pool. This is what
 // makes a project mean something rather than being a label in the sidebar.
@@ -80,27 +224,51 @@ function inScope(turn, chatId, projectId) {
   return tp === cp;                                        // same project, or both unassigned
 }
 
-function recall(messages, chatId, projectId) {
+// Score the in-scope pool against a query. Returns [{ turn, score, source }].
+async function search(query, chatId, projectId, exclude) {
+  const pool = store.turns.filter(t => !(exclude && exclude.has(t.content)) && inScope(t, chatId, projectId));
+  if (!pool.length || !query) return [];
+
+  const kw = bm25(pool, tokenize(query));
+  let kwMax = 0; for (const s of kw.values()) if (s > kwMax) kwMax = s;
+
+  const vs = new Map();
+  if (EMBED && vectors.size) {
+    try {
+      const [qv] = await embed([query], "query");
+      for (const t of pool) {
+        const v = vectors.get(t.id);
+        if (!v) continue;
+        const s = dot(qv, v);
+        if (s >= VECTOR_MIN) vs.set(t.id, s);
+      }
+    } catch (e) { console.warn("vector recall skipped:", e.message); }
+  }
+
+  const byId = new Map(pool.map(t => [t.id, t]));
+  const hits = [];
+  for (const id of new Set([...kw.keys(), ...vs.keys()])) {
+    const k = kw.has(id) ? kw.get(id) / (kwMax || 1) : 0;
+    const v = vs.get(id) || 0;
+    const source = vs.has(id) && kw.has(id) ? "hybrid" : vs.has(id) ? "vector" : "keyword";
+    hits.push({ turn: byId.get(id), score: VECTOR_WEIGHT * v + (1 - VECTOR_WEIGHT) * k, source });
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits;
+}
+
+// RECALL: find the most relevant past turns and format them as a context block.
+async function recall(messages, chatId, projectId) {
   if (!MEMORY_ENABLED || !store.turns.length) return "";
   const lastUser = [...messages].reverse().find(m => m && m.role === "user");
   if (!lastUser || !lastUser.content) return "";
-  const querySet = new Set(tokenize(lastUser.content));
-  if (!querySet.size) return "";
 
   // skip turns whose text is already in the live history (no point re-injecting)
   const live = new Set(messages.map(m => (m && m.content) || ""));
+  const hits = (await search(lastUser.content, chatId, projectId, live)).slice(0, RECALL_LIMIT);
+  if (!hits.length) return "";
 
-  const scored = [];
-  for (const turn of store.turns) {
-    if (live.has(turn.content)) continue;
-    if (!inScope(turn, chatId, projectId)) continue;
-    const score = scoreTurn(tokenize(turn.content), querySet);
-    if (score > 0) scored.push({ turn, score });
-  }
-  if (!scored.length) return "";
-  scored.sort((a, b) => b.score - a.score);
-
-  const lines = scored.slice(0, RECALL_LIMIT).map(({ turn }) => {
+  const lines = hits.map(({ turn }) => {
     const who = turn.role === "user" ? "User" : "Assistant";
     const where = turn.chatId === chatId
       ? "earlier in this chat"
@@ -127,6 +295,7 @@ function remember(newTurns, chatId, projectId) {
   if (!added) return;
   if (store.turns.length > MEMORY_MAX) store.turns = store.turns.slice(-MEMORY_MAX);
   saveStore();
+  indexPending();          // embed the new turns in the background
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +443,7 @@ async function handleChat(body) {
       "or company that built you."
     : "";
 
-  const context = recall(messages, chatId, projectId);
+  const context = await recall(messages, chatId, projectId);
 
   const prefix = [];
   if (persona) prefix.push({ role: "system", content: persona });
@@ -348,7 +517,22 @@ const server = http.createServer((req, res) => {
   // tiny introspection endpoint: how much is remembered, and which backend is live
   if (req.method === "GET" && req.url === "/api/memory/stats") {
     const chats = new Set(store.turns.map(t => t.chatId));
-    sendJson(res, 200, { turns: store.turns.length, chats: chats.size, file: MEMORY_FILE, backend: activeBackend() });
+    sendJson(res, 200, {
+      turns: store.turns.length, chats: chats.size, file: MEMORY_FILE, backend: activeBackend(),
+      embeddings: EMBED_ID || "off", vectors: vectors.size, indexing: !!indexing,
+    });
+    return;
+  }
+
+  // debug: see what recall would surface, and why.  /api/memory/search?q=...&chatId=...&projectId=...
+  if (req.method === "GET" && req.url.startsWith("/api/memory/search")) {
+    const u = new URL(req.url, "http://localhost");
+    search(u.searchParams.get("q") || "", u.searchParams.get("chatId") || "", u.searchParams.get("projectId") || null)
+      .then(hits => sendJson(res, 200, hits.slice(0, 20).map(h => ({
+        score: +h.score.toFixed(4), source: h.source, role: h.turn.role,
+        chatId: h.turn.chatId, projectId: h.turn.projectId, text: h.turn.content.slice(0, 200),
+      }))))
+      .catch(err => sendJson(res, 500, { error: String(err.message || err) }));
     return;
   }
   if (req.method === "GET") { serveStatic(req, res); return; }
@@ -360,4 +544,6 @@ server.listen(PORT, () => {
   console.log("serving ./public  -  POST /api/chat");
   console.log("memory: " + (MEMORY_ENABLED ? (MEMORY_FILE + " (" + store.turns.length + " turns loaded)") : "disabled"));
   console.log("model backend: " + activeBackend());
+  console.log("embeddings: " + (EMBED_ID ? EMBED_ID + " (" + vectors.size + " vectors loaded)" : "off - keyword-only recall"));
+  indexPending();   // backfill any turns that have no vector yet
 });
