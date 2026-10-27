@@ -1,0 +1,33 @@
+# Conversation memory — everything said to the bot. Never commit.
+memory.json
+memory.*.json
+
+# UI state — your chats, projects and settings. Local to each machine.
+state.json
+
+# Environment / secrets
+.env
+.env.*
+*.key
+
+# Runtime logs
+*.log
+*.err
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local backups and scratch
+*.bak
+server.original.js
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,1399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chatbot</title>
+<style>
+  :root {
+    --bg: #f7f7fd;
+    --surface: #efedfb;
+    --surface-2: #e4e1f7;
+    --text: #1e1b34;
+    --text-muted: #6f6a93;
+    --accent: #6d5dd3;
+    --accent-2: #8b7be8;
+    --accent-text: #ffffff;
+    --lavender: #b9a9f0;
+    --border: rgba(109, 93, 211, 0.18);
+    --radius: 14px;
+    --maxw: 760px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14131f;
+      --surface: #1e1c2e;
+      --surface-2: #272540;
+      --text: #e9e7f6;
+      --text-muted: #a39ec6;
+      --accent: #8b7be8;
+      --accent-2: #a596f0;
+      --accent-text: #ffffff;
+      --lavender: #c9bcf7;
+      --border: rgba(165, 150, 240, 0.22);
+    }
+  }
+  /* explicit theme overrides (chosen in Options) beat the system media query */
+  html[data-theme="light"] {
+    --bg: #f7f7fd; --surface: #efedfb; --surface-2: #e4e1f7;
+    --text: #1e1b34; --text-muted: #6f6a93; --accent: #6d5dd3; --accent-2: #8b7be8;
+    --accent-text: #ffffff; --lavender: #b9a9f0; --border: rgba(109, 93, 211, 0.18);
+  }
+  html[data-theme="dark"] {
+    --bg: #14131f; --surface: #1e1c2e; --surface-2: #272540;
+    --text: #e9e7f6; --text-muted: #a39ec6; --accent: #8b7be8; --accent-2: #a596f0;
+    --accent-text: #ffffff; --lavender: #c9bcf7; --border: rgba(165, 150, 240, 0.22);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell { display: flex; width: 100%; height: 100vh; }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    transition: width 0.2s ease, transform 0.2s ease;
+    overflow: hidden;
+  }
+  .sidebar.collapsed { width: 0; border-right: none; }
+
+  .sb-head { padding: 14px 14px 6px; }
+  .sb-tabs { display: flex; gap: 3px; background: var(--surface-2); border-radius: 10px; padding: 3px; }
+  .sb-tab {
+    flex: 1; border: none; background: transparent; color: var(--text-muted);
+    font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+    padding: 7px 2px; border-radius: 8px; display: flex; align-items: center;
+    justify-content: center; gap: 5px; white-space: nowrap;
+  }
+  .sb-tab.active { background: var(--bg); color: var(--accent); }
+  .sb-tab svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+  .sb-action { padding: 8px 14px; }
+  .sb-new {
+    width: 100%; border: 1px solid var(--border); background: transparent;
+    color: var(--accent); font-family: inherit; font-size: 13px; font-weight: 500;
+    cursor: pointer; padding: 9px; border-radius: 9px; display: flex;
+    align-items: center; justify-content: center; gap: 6px;
+  }
+  .sb-new:hover { background: var(--surface-2); }
+  .sb-new svg { width: 15px; height: 15px; }
+
+  .sb-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+  .sb-item {
+    display: flex; align-items: center; gap: 9px; padding: 9px 10px;
+    border-radius: 9px; cursor: pointer; color: var(--text);
+    font-size: 14px; margin-bottom: 2px; border: 1px solid transparent;
+  }
+  .sb-item:hover { background: var(--surface-2); }
+  .sb-item.active { background: var(--surface-2); border-color: var(--border); }
+  .sb-item svg { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
+  .sb-item .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .sb-item .sub { font-size: 11px; color: var(--text-muted); }
+  .sb-empty { padding: 16px 12px; font-size: 13px; color: var(--text-muted); text-align: center; }
+
+  /* delete button on a sidebar item */
+  .sb-del {
+    border: none; background: transparent; color: var(--text-muted);
+    cursor: pointer; padding: 3px; border-radius: 6px; display: flex;
+    opacity: 0; flex-shrink: 0;
+  }
+  .sb-item:hover .sb-del { opacity: 1; }
+  .sb-del:hover { background: var(--bg); color: #d9534f; }
+  .sb-del svg { width: 15px; height: 15px; color: inherit; }
+
+  /* scheduled-item layout */
+  .sb-item .col { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .sb-item .when { font-size: 11px; color: var(--text-muted); }
+  .sb-badge {
+    font-size: 10px; color: var(--accent); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 6px; flex-shrink: 0;
+  }
+
+  /* new-scheduled-ask form */
+  .sb-form {
+    padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+    border: 1px solid var(--border); border-radius: 10px; margin: 0 4px 8px;
+    background: var(--bg);
+  }
+  .sb-form label { font-size: 11px; color: var(--text-muted); }
+  .sb-form input, .sb-form select {
+    width: 100%; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px;
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .sb-form input:focus, .sb-form select:focus { border-color: var(--accent); }
+  .sb-form .row2 { display: flex; gap: 8px; }
+  .sb-form .row2 button {
+    flex: 1; border-radius: 8px; padding: 8px; font-size: 13px;
+    font-family: inherit; cursor: pointer; border: 1px solid var(--border);
+  }
+  .sb-form .save { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .sb-form .save:hover { background: var(--accent-2); }
+  .sb-form .cancel { background: transparent; color: var(--text-muted); }
+  .sb-form .cancel:hover { background: var(--surface-2); }
+
+  .app {
+    flex: 1;
+    min-width: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  .app .inner-wrap { max-width: var(--maxw); width: 100%; margin: 0 auto; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .menu-btn {
+    border: none; background: transparent; color: var(--text-muted);
+    cursor: pointer; padding: 4px; border-radius: 8px; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .menu-btn:hover { background: var(--surface); color: var(--accent); }
+  .menu-btn svg { width: 20px; height: 20px; }
+  .logo {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-text);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 15px;
+    flex-shrink: 0;
+  }
+  header .meta { display: flex; flex-direction: column; }
+  header .title { font-weight: 600; font-size: 15px; }
+  header .status { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+  header .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--lavender); }
+  header .spacer { flex: 1; }
+  .icon-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .icon-btn:hover { background: var(--surface); color: var(--accent); }
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .row { display: flex; gap: 10px; max-width: 100%; }
+  .row.user { justify-content: flex-end; }
+
+  .avatar {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--surface-2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600; color: var(--accent);
+    flex-shrink: 0; margin-top: 2px;
+  }
+  .row.user .avatar { display: none; }
+
+  .bubble {
+    padding: 11px 14px;
+    border-radius: var(--radius);
+    font-size: 15px;
+    word-wrap: break-word;
+    max-width: 80%;
+  }
+  .row.bot .bubble  { background: var(--surface); border-top-left-radius: 4px; }
+  .row.user .bubble { background: var(--accent); color: var(--accent-text); border-top-right-radius: 4px; }
+  .bubble-text { white-space: pre-wrap; word-wrap: break-word; }
+  .att { display: flex; flex-wrap: wrap; gap: 6px; }
+  .att:not(:last-child) { margin-bottom: 8px; }
+  .att-img img { max-width: 180px; max-height: 180px; border-radius: 8px; display: block; }
+  .att-file {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+    background: var(--surface-2); border-radius: 8px; padding: 6px 10px;
+  }
+  .row.user .att-file { background: rgba(255, 255, 255, 0.18); }
+  .att-file svg { width: 15px; height: 15px; flex-shrink: 0; }
+
+  .typing { display: flex; gap: 4px; padding: 4px 2px; }
+  .typing span {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--lavender); opacity: 0.6;
+    animation: blink 1.2s infinite ease-in-out;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: 0.3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+
+  .composer {
+    border-top: 1px solid var(--border);
+    padding: 12px 16px 16px;
+  }
+  .composer .inner {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 8px 8px 14px;
+  }
+  .composer .inner:focus-within { border-color: var(--accent); }
+  textarea {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 15px;
+    resize: none;
+    outline: none;
+    max-height: 160px;
+    line-height: 1.5;
+    padding: 5px 0;
+  }
+  textarea::placeholder { color: var(--text-muted); }
+  .send {
+    width: 38px; height: 38px;
+    border-radius: 10px;
+    border: none;
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .send:hover { background: var(--accent-2); }
+  .send:disabled { opacity: 0.4; cursor: default; }
+  .send svg { width: 18px; height: 18px; }
+  .hint { text-align: center; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+
+  /* attach button + file chips */
+  .attach-btn {
+    width: 34px; height: 34px; border: none; background: transparent;
+    color: var(--text-muted); cursor: pointer; display: flex; align-items: center;
+    justify-content: center; flex-shrink: 0; border-radius: 8px;
+  }
+  .attach-btn:hover { background: var(--surface-2); color: var(--accent); }
+  .attach-btn svg { width: 18px; height: 18px; }
+  .pending { display: none; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px;
+    font-size: 12px; max-width: 220px;
+  }
+  .chip img { width: 26px; height: 26px; object-fit: cover; border-radius: 5px; flex-shrink: 0; }
+  .chip > svg { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
+  .chip-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip-size { color: var(--text-muted); flex-shrink: 0; }
+  .chip-x { border: none; background: transparent; color: var(--text-muted); cursor: pointer; padding: 0; display: flex; flex-shrink: 0; }
+  .chip-x:hover { color: #d9534f; }
+  .chip-x svg { width: 13px; height: 13px; }
+
+  /* drag-and-drop overlay */
+  .drop-overlay {
+    position: absolute; inset: 8px; z-index: 40;
+    background: rgba(109, 93, 211, 0.10);
+    border: 2px dashed var(--accent); border-radius: 12px;
+    display: none; align-items: center; justify-content: center;
+    color: var(--accent); font-size: 15px; font-weight: 500;
+    pointer-events: none;
+  }
+  .drop-overlay.show { display: flex; }
+
+  /* in-DOM confirm/prompt dialog (replaces blocked native confirm/prompt) */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+    display: none; align-items: center; justify-content: center; z-index: 50;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px; width: 330px; max-width: calc(100% - 40px);
+  }
+  .modal p { margin: 0 0 16px; font-size: 14px; line-height: 1.5; }
+  .modal input {
+    width: 100%; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+    font-family: inherit; font-size: 14px; outline: none; margin-bottom: 16px;
+  }
+  .modal input:focus { border-color: var(--accent); }
+  .modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .modal button {
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; font-family: inherit;
+    cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text-muted);
+  }
+  .modal button:hover { background: var(--surface-2); }
+  .modal button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .modal button.primary:hover { background: var(--accent-2); }
+  .modal button.danger { background: #d9534f; color: #fff; border-color: #d9534f; }
+  .modal button.danger:hover { background: #c9302c; }
+  .modal .choices { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .modal .choices .choice {
+    width: 100%; text-align: left; padding: 9px 11px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer;
+    font-family: inherit; font-size: 13px;
+  }
+  .modal .choices .choice:hover { background: var(--surface-2); border-color: var(--accent); }
+
+  /* options screen */
+  .options-screen {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+    display: none; align-items: center; justify-content: center; z-index: 60;
+  }
+  .options-screen.show { display: flex; }
+  .opt-panel {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 16px; width: 460px; max-width: calc(100% - 32px);
+    max-height: calc(100% - 64px); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .opt-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 18px; border-bottom: 1px solid var(--border);
+  }
+  .opt-title { font-weight: 600; font-size: 16px; }
+  .opt-body { padding: 8px 18px 18px; overflow-y: auto; }
+  .opt-section {
+    font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--accent); margin: 18px 0 8px;
+  }
+  .opt-note { color: var(--text-muted); font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11px; }
+  .opt-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 9px 0; font-size: 14px;
+  }
+  .opt-row.column { flex-direction: column; align-items: stretch; gap: 6px; }
+  .opt-row > span { color: var(--text); }
+  .opt-row input[type="text"], .opt-row select {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13px; outline: none;
+  }
+  .opt-row.column input[type="text"] { width: 100%; }
+  .opt-row select { min-width: 130px; }
+  .opt-row input:focus, .opt-row select:focus { border-color: var(--accent); }
+  .opt-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+  .opt-warn {
+    font-size: 12px; color: #d9534f; background: rgba(217, 83, 79, 0.08);
+    border: 1px solid rgba(217, 83, 79, 0.25); border-radius: 8px; padding: 9px 11px; margin: 10px 0 0;
+  }
+  .opt-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .opt-actions button {
+    border-radius: 8px; padding: 9px 16px; font-size: 13px; font-family: inherit;
+    cursor: pointer; border: 1px solid var(--border);
+  }
+  .opt-actions .cancel { background: transparent; color: var(--text-muted); }
+  .opt-actions .cancel:hover { background: var(--surface-2); }
+  .opt-actions .save { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .opt-actions .save:hover { background: var(--accent-2); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    background: transparent; color: var(--text-muted); border: none;
+    padding: 7px 18px; font-family: inherit; font-size: 13px; cursor: pointer;
+  }
+  .seg button.active { background: var(--accent); color: var(--accent-text); }
+  .seg button:not(.active):hover { background: var(--surface-2); }
+
+  /* project drill-in back row */
+  .sb-back {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 4px;
+    cursor: pointer; color: var(--text); font-size: 13px; font-weight: 500; border-radius: 8px;
+  }
+  .sb-back:hover { background: var(--surface-2); }
+  .sb-back svg { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-head">
+        <div class="sb-tabs">
+          <button class="sb-tab active" id="tab-chats" data-tab="chats">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Chats
+          </button>
+          <button class="sb-tab" id="tab-projects" data-tab="projects">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Projects
+          </button>
+          <button class="sb-tab" id="tab-scheduled" data-tab="scheduled">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            Scheduled
+          </button>
+        </div>
+      </div>
+      <div class="sb-action">
+        <button class="sb-new" id="sb-new">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span id="sb-new-label">New chat</span>
+        </button>
+      </div>
+      <div class="sb-list" id="sb-list"></div>
+    </aside>
+
+    <div class="app">
+      <div class="drop-overlay" id="drop-overlay">Drop files to attach</div>
+      <header>
+        <button class="menu-btn" id="menu-btn" aria-label="Toggle sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="logo" id="logo">AI</div>
+        <div class="meta">
+          <span class="title" id="bot-name">Assistant</span>
+          <span class="status"><span class="dot"></span> Online</span>
+        </div>
+        <div class="spacer"></div>
+        <button class="menu-btn" id="options-btn" aria-label="Options">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button class="icon-btn" id="clear-btn">New chat</button>
+      </header>
+
+      <div class="inner-wrap">
+        <main class="messages" id="messages" aria-live="polite"></main>
+
+        <div class="composer">
+          <div class="pending" id="pending"></div>
+          <div class="inner">
+            <button class="attach-btn" id="attach-btn" aria-label="Attach files">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+            <textarea id="input" rows="1" placeholder="Send a message…" aria-label="Message"></textarea>
+            <button class="send" id="send-btn" aria-label="Send message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+            </button>
+          </div>
+          <input type="file" id="file-input" multiple hidden />
+          <div class="hint">Enter to send · Shift+Enter for a new line · drop or attach files</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="modal-overlay"></div>
+
+  <div class="options-screen" id="options-screen">
+    <div class="opt-panel">
+      <div class="opt-head">
+        <span class="opt-title">Options</span>
+        <button class="menu-btn" id="opt-close" aria-label="Close options">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="opt-body">
+
+        <div class="opt-section">Appearance</div>
+        <label class="opt-row">
+          <span>Theme</span>
+          <select id="opt-theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+
+        <div class="opt-section">Assistant</div>
+        <label class="opt-row column">
+          <span>Bot name</span>
+          <input type="text" id="opt-botname" placeholder="Assistant" />
+        </label>
+        <label class="opt-row column">
+          <span>Avatar initials</span>
+          <input type="text" id="opt-avatar" maxlength="3" placeholder="AI" />
+        </label>
+        <label class="opt-row column">
+          <span>Greeting message</span>
+          <input type="text" id="opt-greeting" placeholder="Hey! How can I help?" />
+        </label>
+
+        <div class="opt-section">Behavior</div>
+        <label class="opt-row">
+          <span>Send on Enter</span>
+          <input type="checkbox" id="opt-enter" checked />
+        </label>
+        <label class="opt-row">
+          <span>Show typing indicator</span>
+          <input type="checkbox" id="opt-typing" checked />
+        </label>
+
+        <div class="opt-section">Backend</div>
+        <label class="opt-row column">
+          <span>Server endpoint <span class="opt-note">(this page talks only to your server)</span></span>
+          <input type="text" id="opt-api-endpoint" placeholder="/api/chat" />
+        </label>
+        <p class="opt-note" style="margin:2px 0 0; line-height:1.5;">
+          Which model answers is decided by the server, not here. Set a provider key
+          as an environment variable where the server runs &mdash; see the README.
+        </p>
+
+        <p class="opt-warn">Never put API keys here — this file is client-side and public. Keys belong on the server.</p>
+
+        <div class="opt-actions">
+          <button class="cancel" id="opt-reset">Reset defaults</button>
+          <button class="save" id="opt-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ============================================================
+   CONFIG — edit these for your bot's identity.
+   ============================================================ */
+const CONFIG = {
+  botName: "Assistant",
+  avatar: "AI",
+  greeting: "Hey! I'm a starter chatbot UI. Wire me up to your API and database when you're ready.",
+};
+
+/* ============================================================
+   STATE — the full conversation lives here, in memory.
+   This array is exactly what you'll send to your API as the
+   message history, and what you'll persist to your database.
+   ============================================================ */
+const state = {
+  messages: [],   // { role: "user" | "assistant", content: string }
+  busy: false,
+  // Stable id for THIS conversation. The backend scopes its memory by this,
+  // so each chat keeps its own thread instead of sharing one bucket.
+  chatId: (function () {
+    try {
+      const k = "chatbot.chatId";
+      let v = sessionStorage.getItem(k);
+      if (!v) {
+        v = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        sessionStorage.setItem(k, v);
+      }
+      return v;
+    } catch (e) {
+      return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+  })(),
+};
+
+/* ============================================================
+   *** BACKEND SEAM ***
+   This page is a thin client. It POSTs the conversation to your
+   server and renders whatever comes back. Nothing else.
+
+   The server decides which model answers and holds the provider
+   key as an environment variable, so the same page works
+   unchanged wherever the server is running. Never put a key in
+   this file -- it is client-side and public.
+   ============================================================ */
+async function generateResponse(history) {
+  const endpoint = state.settings.apiEndpoint || "/api/chat";
+  return callApi(history, endpoint);
+}
+
+/* Your own backend. It receives the history, talks to whatever
+   provider you choose with a key held server-side, and returns
+   the reply. Default expects { reply: "..." }. */
+async function callApi(history, endpoint) {
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: history,
+      chatId: state.activeChatId || state.chatId,
+      projectId: (currentChat() || {}).projectId || null,
+      botName: state.settings.botName || undefined,
+    }),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json()).error || ""; } catch (e) { /* non-JSON body */ }
+    throw new Error(detail || ("Server error " + res.status));
+  }
+  const data = await res.json();
+  return data.reply ?? data.choices?.[0]?.message?.content ?? JSON.stringify(data);
+}
+
+
+/* ============================================================
+   DATABASE SEAM (optional) — fill these in when you add a DB.
+   Conversations are organized into chats (each with its own
+   messages) and projects. These run on startup / on change;
+   until you fill them in they're harmless no-ops and everything
+   just lives in memory for the session.
+   ============================================================ */
+const STATE_URL = "/api/state";
+
+/* The server keeps one state document. Rather than a round trip per entity,
+   the whole thing is fetched once on boot and written back when something
+   changes, debounced so a burst of edits is one write. For a single-user
+   local app that is simpler and faster than per-entity CRUD. */
+let _stateCache = null;
+let _saveTimer = null;
+
+async function fetchState() {
+  if (_stateCache) return _stateCache;
+  try {
+    const res = await fetch(STATE_URL);
+    if (!res.ok) throw new Error("state " + res.status);
+    _stateCache = await res.json();
+  } catch (e) {
+    console.warn("state load failed, starting empty:", e.message);
+    _stateCache = { chats: [], projects: [], schedules: [], settings: null };
+  }
+  return _stateCache;
+}
+
+/* Push the live state to the server. Debounced: rapid edits collapse into
+   one write, and the trailing call always lands. */
+function persistState() {
+  _stateCache = {
+    chats: state.chats,
+    projects: state.projects,
+    schedules: state.schedules,
+    settings: state.settings,
+  };
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    fetch(STATE_URL, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(_stateCache),
+    }).catch(e => console.warn("state save failed:", e.message));
+  }, 400);
+}
+
+async function loadChats()     { return (await fetchState()).chats || []; }
+async function loadProjects()  { return (await fetchState()).projects || []; }
+async function loadSchedules() { return (await fetchState()).schedules || []; }
+
+async function saveChat()            { persistState(); }
+async function saveProject()         { persistState(); }
+async function saveSchedule()        { persistState(); }
+async function deleteScheduleRemote(){ persistState(); }
+async function deleteChatRemote()    { persistState(); }
+async function saveMessage()         { persistState(); }
+
+/* ============================================================
+   FILE UPLOAD SEAM — where attachments go to your backend.
+   The UI keeps a local preview so it works offline today.
+   When your backend exists, POST each File to it / object
+   storage and return [{ name, type, size, url }] where url is
+   the stored, fetchable location. NEVER upload straight to a
+   third-party provider with a key in this file — go through
+   your own backend, same as generateResponse().
+   ============================================================ */
+async function uploadFiles(items) {
+  // items: [{ name, type, size, file, previewUrl }]
+  // Real version, once your backend is live:
+  //   const out = [];
+  //   for (const it of items) {
+  //     const body = new FormData(); body.append("file", it.file);
+  //     const res = await fetch("/api/upload", { method: "POST", body });
+  //     const { url } = await res.json();
+  //     out.push({ name: it.name, type: it.type, size: it.size, url });
+  //   }
+  //   return out;
+  return items.map(it => ({ name: it.name, type: it.type, size: it.size, url: it.previewUrl }));
+}
+
+/* ============================================================
+   UI — you shouldn't need to touch anything below here.
+   ============================================================ */
+const els = {
+  messages: document.getElementById("messages"),
+  input: document.getElementById("input"),
+  send: document.getElementById("send-btn"),
+  clear: document.getElementById("clear-btn"),
+  botName: document.getElementById("bot-name"),
+  logo: document.getElementById("logo"),
+  sidebar: document.getElementById("sidebar"),
+  menuBtn: document.getElementById("menu-btn"),
+  sbList: document.getElementById("sb-list"),
+  sbNew: document.getElementById("sb-new"),
+  sbNewLabel: document.getElementById("sb-new-label"),
+  tabChats: document.getElementById("tab-chats"),
+  tabProjects: document.getElementById("tab-projects"),
+  tabScheduled: document.getElementById("tab-scheduled"),
+  modal: document.getElementById("modal-overlay"),
+  attachBtn: document.getElementById("attach-btn"),
+  fileInput: document.getElementById("file-input"),
+  pending: document.getElementById("pending"),
+  drop: document.getElementById("drop-overlay"),
+  optionsBtn: document.getElementById("options-btn"),
+  optScreen: document.getElementById("options-screen"),
+  optClose: document.getElementById("opt-close"),
+  optTheme: document.getElementById("opt-theme"),
+  optBotName: document.getElementById("opt-botname"),
+  optAvatar: document.getElementById("opt-avatar"),
+  optGreeting: document.getElementById("opt-greeting"),
+  optEnter: document.getElementById("opt-enter"),
+  optTyping: document.getElementById("opt-typing"),
+  optApiEndpoint: document.getElementById("opt-api-endpoint"),
+  optSave: document.getElementById("opt-save"),
+  optReset: document.getElementById("opt-reset"),
+};
+
+// multi-chat / project / schedule state
+state.chats = [];          // { id, title, messages, projectId }  (projectId null = unassigned)
+state.projects = [];       // { id, name }
+state.schedules = [];      // { id, time (epoch ms), prompt, repeat: "once"|"hourly"|"daily", fired }
+state.pending = [];        // attachments chosen but not yet sent
+state.activeChatId = null;
+state.activeTab = "chats";
+state.openProjectId = null; // which project is drilled into on the Projects tab
+state.addingSchedule = false;
+
+/* ============================================================
+   SETTINGS — chosen in the Options screen. Live in memory and
+   apply for the session. loadSettings()/saveSettings() are the
+   seams to persist them to your backend later (same pattern as
+   chats). No browser storage is used on purpose: this file is
+   meant to drop into a page where the backend holds real state.
+   endpoint/model are placeholders your generateResponse() can
+   read once a backend exists — they are NOT used by the mock.
+   ============================================================ */
+const DEFAULT_SETTINGS = {
+  theme: "system",            // "system" | "light" | "dark"
+  botName: CONFIG.botName,
+  avatar: CONFIG.avatar,
+  greeting: CONFIG.greeting,
+  sendOnEnter: true,
+  showTyping: true,
+  apiEndpoint: "/api/chat",   // the only backend: your own server, which owns model choice
+};
+state.settings = { ...DEFAULT_SETTINGS };
+
+async function loadSettings() {
+  return (await fetchState()).settings || null;
+}
+async function saveSettings() {
+  persistState();
+}
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+/* In-DOM dialogs — native confirm()/prompt() are blocked in sandboxed
+   iframes, so we render our own. Both return a Promise. */
+function uiConfirm(message, opts = {}) {
+  return new Promise(resolve => {
+    els.modal.innerHTML =
+      `<div class="modal"><p>${escapeHtml(message)}</p><div class="actions">` +
+      `<button id="m-cancel">Cancel</button>` +
+      `<button class="${opts.danger ? "danger" : "primary"}" id="m-ok">${escapeHtml(opts.okText || "OK")}</button>` +
+      `</div></div>`;
+    els.modal.classList.add("show");
+    const close = val => { els.modal.classList.remove("show"); els.modal.innerHTML = ""; resolve(val); };
+    els.modal.querySelector("#m-cancel").onclick = () => close(false);
+    els.modal.querySelector("#m-ok").onclick = () => close(true);
+  });
+}
+
+function uiPrompt(label, opts = {}) {
+  return new Promise(resolve => {
+    els.modal.innerHTML =
+      `<div class="modal"><p>${escapeHtml(label)}</p>` +
+      `<input type="text" id="m-input" value="${escapeHtml(opts.value || "")}" placeholder="${escapeHtml(opts.placeholder || "")}" />` +
+      `<div class="actions"><button id="m-cancel">Cancel</button>` +
+      `<button class="primary" id="m-ok">${escapeHtml(opts.okText || "Save")}</button></div></div>`;
+    els.modal.classList.add("show");
+    const input = els.modal.querySelector("#m-input");
+    input.focus();
+    const close = val => { els.modal.classList.remove("show"); els.modal.innerHTML = ""; resolve(val); };
+    els.modal.querySelector("#m-cancel").onclick = () => close(null);
+    els.modal.querySelector("#m-ok").onclick = () => close(input.value);
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") close(input.value);
+      if (e.key === "Escape") close(null);
+    });
+  });
+}
+
+function uiChoose(label, choices) {
+  // choices: [{ label, value }]. Resolves the chosen value, or undefined if cancelled.
+  return new Promise(resolve => {
+    const btns = choices.map((c, i) => `<button class="choice" data-i="${i}">${escapeHtml(c.label)}</button>`).join("");
+    els.modal.innerHTML =
+      `<div class="modal"><p>${escapeHtml(label)}</p><div class="choices">${btns}</div>` +
+      `<div class="actions"><button id="m-cancel">Cancel</button></div></div>`;
+    els.modal.classList.add("show");
+    const close = val => { els.modal.classList.remove("show"); els.modal.innerHTML = ""; resolve(val); };
+    els.modal.querySelector("#m-cancel").onclick = () => close(undefined);
+    els.modal.querySelectorAll(".choice").forEach(b => {
+      b.onclick = () => close(choices[+b.dataset.i].value);
+    });
+  });
+}
+
+const ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+function isImage(type) { return type && type.indexOf("image/") === 0; }
+
+function attachmentsHtml(attachments) {
+  if (!attachments || !attachments.length) return "";
+  let html = '<div class="att">';
+  attachments.forEach(a => {
+    if (isImage(a.type) && a.url) {
+      html += `<a class="att-img" href="${a.url}" target="_blank" rel="noopener"><img src="${a.url}" alt="${escapeHtml(a.name)}"></a>`;
+    } else {
+      html += `<span class="att-file">${ICON_FILE}<span>${escapeHtml(a.name)}</span></span>`;
+    }
+  });
+  return html + "</div>";
+}
+
+function renderMessage(role, content, attachments) {
+  const row = document.createElement("div");
+  row.className = "row " + (role === "user" ? "user" : "bot");
+  const avatar = role === "user" ? "" : `<div class="avatar">${escapeHtml(CONFIG.avatar)}</div>`;
+  const atts = attachmentsHtml(attachments);
+  const text = content ? `<div class="bubble-text">${escapeHtml(content)}</div>` : "";
+  row.innerHTML = `${avatar}<div class="bubble">${atts}${text}</div>`;
+  els.messages.appendChild(row);
+  scrollToBottom();
+}
+
+function showTyping() {
+  const row = document.createElement("div");
+  row.className = "row bot";
+  row.id = "typing-row";
+  row.innerHTML = `<div class="avatar">${escapeHtml(CONFIG.avatar)}</div><div class="bubble"><div class="typing"><span></span><span></span><span></span></div></div>`;
+  els.messages.appendChild(row);
+  scrollToBottom();
+}
+function hideTyping() {
+  document.getElementById("typing-row")?.remove();
+}
+
+function scrollToBottom() {
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function setBusy(b) {
+  state.busy = b;
+  els.send.disabled = b;
+}
+
+async function sendText(text, attachments) {
+  text = (text || "").trim();
+  const hasAtt = attachments && attachments.length;
+  if ((!text && !hasAtt) || state.busy) return;
+
+  // hand attachments to the backend (or keep local previews for now)
+  let stored = [];
+  if (hasAtt) {
+    try { stored = await uploadFiles(attachments); }
+    catch (err) { stored = attachments.map(a => ({ name: a.name, type: a.type, size: a.size, url: a.previewUrl })); }
+  }
+
+  const userMsg = { role: "user", content: text, attachments: stored };
+  state.messages.push(userMsg);
+  renderMessage("user", text, stored);
+  saveMessage(state.activeChatId, userMsg);
+
+  // name the chat from its first message (or first attachment)
+  const chat = currentChat();
+  const titleSeed = text || (stored[0] && stored[0].name) || "";
+  if (chat && (!chat.title || chat.title === "New chat") && titleSeed) {
+    chat.title = titleSeed.slice(0, 40);
+    renderSidebar();
+  }
+
+  setBusy(true);
+  if (state.settings.showTyping) showTyping();
+  try {
+    const reply = await generateResponse(state.messages);
+    hideTyping();
+    const botMsg = { role: "assistant", content: reply };
+    state.messages.push(botMsg);
+    renderMessage("assistant", reply);
+    saveMessage(state.activeChatId, botMsg);
+    saveChat(currentChat());
+  } catch (err) {
+    hideTyping();
+    renderMessage("assistant", "⚠️ Something went wrong reaching the backend. " + err.message);
+  } finally {
+    setBusy(false);
+    els.input.focus();
+  }
+}
+
+function handleSend() {
+  const text = els.input.value;
+  const attachments = state.pending.slice();
+  els.input.value = "";
+  state.pending = [];
+  renderPending();
+  autoGrow();
+  sendText(text, attachments);
+}
+
+/* ---------- Attachments (pending, before send) ---------- */
+function fmtSize(b) {
+  if (b < 1024) return b + " B";
+  if (b < 1048576) return Math.round(b / 1024) + " KB";
+  return (b / 1048576).toFixed(1) + " MB";
+}
+
+function addPendingFiles(fileList) {
+  for (const file of fileList) {
+    state.pending.push({
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      file,
+      previewUrl: isImage(file.type) ? URL.createObjectURL(file) : null,
+    });
+  }
+  renderPending();
+}
+
+function removePending(i) {
+  const a = state.pending[i];
+  if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  state.pending.splice(i, 1);
+  renderPending();
+}
+
+function renderPending() {
+  els.pending.innerHTML = "";
+  els.pending.style.display = state.pending.length ? "flex" : "none";
+  state.pending.forEach((a, i) => {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    const thumb = a.previewUrl ? `<img src="${a.previewUrl}" alt="">` : ICON_FILE;
+    chip.innerHTML = `${thumb}<span class="chip-name">${escapeHtml(a.name)}</span><span class="chip-size">${fmtSize(a.size)}</span><button class="chip-x" aria-label="Remove">${ICON_X}</button>`;
+    chip.querySelector(".chip-x").addEventListener("click", () => removePending(i));
+    els.pending.appendChild(chip);
+  });
+}
+
+function autoGrow() {
+  els.input.style.height = "auto";
+  els.input.style.height = Math.min(els.input.scrollHeight, 160) + "px";
+}
+
+els.send.addEventListener("click", handleSend);
+els.input.addEventListener("input", autoGrow);
+els.input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && state.settings.sendOnEnter) { e.preventDefault(); handleSend(); }
+});
+els.clear.addEventListener("click", () => { setTab("chats"); newChat(); });
+
+/* ---------- Sidebar: chats + projects ---------- */
+function currentChat() { return state.chats.find(c => c.id === state.activeChatId); }
+
+function chatsInProject(pid) { return state.chats.filter(c => (c.projectId || null) === pid); }
+
+function updateNewLabel() {
+  els.sbNewLabel.textContent =
+    state.activeTab === "scheduled" ? "New ask"
+    : state.activeTab === "projects" && !state.openProjectId ? "New project"
+    : "New chat";
+}
+
+async function moveChat(id) {
+  const chat = state.chats.find(c => c.id === id);
+  if (!chat) return;
+  const choices = [{ label: "No project (unassigned)", value: null }]
+    .concat(state.projects.map(p => ({ label: p.name, value: p.id })));
+  const choice = await uiChoose("Move chat to…", choices);
+  if (choice === undefined) return;        // cancelled
+  chat.projectId = choice;
+  saveChat(chat);
+  renderSidebar();
+}
+
+function chatItem(c) {
+  const item = document.createElement("div");
+  item.className = "sb-item" + (c.id === state.activeChatId ? " active" : "");
+  item.innerHTML = `${ICON_CHAT}<span class="label">${escapeHtml(c.title || "New chat")}</span>`;
+  item.addEventListener("click", () => openChat(c.id));
+  item.appendChild(iconBtn(ICON_PROJ, "Move to project", () => moveChat(c.id)));
+  item.appendChild(delButton(() => deleteChat(c.id)));
+  return item;
+}
+
+function newChat(projectId = null) {
+  const chat = { id: uid(), title: "New chat", messages: [], projectId };
+  state.chats.unshift(chat);
+  saveChat(chat);
+  openChat(chat.id);
+}
+
+function openChat(id) {
+  const chat = state.chats.find(c => c.id === id);
+  if (!chat) return;
+  state.activeChatId = id;
+  state.messages = chat.messages;          // live reference: pushes mutate the chat
+  els.messages.innerHTML = "";
+  if (chat.messages.length) {
+    chat.messages.forEach(m => renderMessage(m.role, m.content, m.attachments));
+  } else {
+    greet();
+  }
+  renderSidebar();
+  els.input.focus();
+}
+
+async function deleteChat(id) {
+  const chat = state.chats.find(c => c.id === id);
+  if (!chat) return;
+  const ok = await uiConfirm(`Delete "${chat.title || "this chat"}"? This can't be undone.`, { danger: true, okText: "Delete" });
+  if (!ok) return;
+  state.chats = state.chats.filter(c => c.id !== id);
+  deleteChatRemote(id);
+  if (state.activeChatId === id) {
+    if (state.chats.length) openChat(state.chats[0].id);
+    else newChat();                 // always keep at least one open chat
+  } else {
+    renderSidebar();
+  }
+}
+
+async function newProject() {
+  const name = ((await uiPrompt("Project name", { placeholder: "e.g. Backing vocalist" })) || "").trim();
+  if (!name) return;
+  const project = { id: uid(), name };
+  state.projects.unshift(project);
+  saveProject(project);
+  renderSidebar();
+}
+
+function setTab(tab) {
+  state.activeTab = tab;
+  state.addingSchedule = false;
+  state.openProjectId = null;
+  els.tabChats.classList.toggle("active", tab === "chats");
+  els.tabProjects.classList.toggle("active", tab === "projects");
+  els.tabScheduled.classList.toggle("active", tab === "scheduled");
+  renderSidebar();
+}
+
+const ICON_CHAT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+const ICON_PROJ = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+
+const ICON_CLOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>';
+const ICON_BACK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>';
+
+function fmtTime(ms) {
+  const d = new Date(ms);
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+function repeatLabel(r) { return r === "hourly" ? "hourly" : r === "daily" ? "daily" : ""; }
+
+function delButton(onClick) {
+  const b = document.createElement("button");
+  b.className = "sb-del";
+  b.setAttribute("aria-label", "Delete");
+  b.innerHTML = ICON_TRASH;
+  b.addEventListener("click", e => { e.stopPropagation(); onClick(); });
+  return b;
+}
+
+function iconBtn(svg, label, onClick) {
+  const b = document.createElement("button");
+  b.className = "sb-del";
+  b.setAttribute("aria-label", label);
+  b.innerHTML = svg;
+  b.addEventListener("click", e => { e.stopPropagation(); onClick(); });
+  return b;
+}
+
+function renderSidebar() {
+  els.sbList.innerHTML = "";
+  updateNewLabel();
+
+  if (state.activeTab === "chats") {
+    const chats = chatsInProject(null);
+    if (!chats.length) { els.sbList.innerHTML = `<div class="sb-empty">No unassigned chats</div>`; return; }
+    chats.forEach(c => els.sbList.appendChild(chatItem(c)));
+    return;
+  }
+
+  if (state.activeTab === "projects") {
+    if (state.openProjectId) {
+      const proj = state.projects.find(p => p.id === state.openProjectId);
+      if (!proj) { state.openProjectId = null; renderSidebar(); return; }
+      const back = document.createElement("div");
+      back.className = "sb-back";
+      back.innerHTML = `${ICON_BACK}<span>${escapeHtml(proj.name)}</span>`;
+      back.addEventListener("click", () => { state.openProjectId = null; renderSidebar(); });
+      els.sbList.appendChild(back);
+      const chats = chatsInProject(proj.id);
+      if (!chats.length) {
+        const e = document.createElement("div");
+        e.className = "sb-empty";
+        e.textContent = "No chats in this project yet";
+        els.sbList.appendChild(e);
+      } else {
+        chats.forEach(c => els.sbList.appendChild(chatItem(c)));
+      }
+      return;
+    }
+    if (!state.projects.length) { els.sbList.innerHTML = `<div class="sb-empty">No projects yet</div>`; return; }
+    state.projects.forEach(p => {
+      const item = document.createElement("div");
+      item.className = "sb-item";
+      const count = chatsInProject(p.id).length;
+      item.innerHTML = `${ICON_PROJ}<span class="col"><span class="label">${escapeHtml(p.name)}</span><span class="when">${count} chat${count === 1 ? "" : "s"}</span></span>`;
+      item.addEventListener("click", () => { state.openProjectId = p.id; renderSidebar(); });
+      item.appendChild(delButton(() => deleteProject(p.id)));
+      els.sbList.appendChild(item);
+    });
+    return;
+  }
+
+  // scheduled tab
+  if (state.addingSchedule) els.sbList.appendChild(buildScheduleForm());
+  const pending = state.schedules.filter(s => !s.fired || s.repeat !== "once")
+    .sort((a, b) => a.time - b.time);
+  const done = state.schedules.filter(s => s.fired && s.repeat === "once");
+  if (!state.schedules.length && !state.addingSchedule) {
+    els.sbList.innerHTML = `<div class="sb-empty">No scheduled asks yet</div>`;
+    return;
+  }
+  [...pending, ...done].forEach(s => {
+    const item = document.createElement("div");
+    item.className = "sb-item";
+    const badge = repeatLabel(s.repeat) ? `<span class="sb-badge">${repeatLabel(s.repeat)}</span>` : "";
+    const when = s.fired && s.repeat === "once" ? "done" : fmtTime(s.time);
+    item.innerHTML = `${ICON_CLOCK}<span class="col"><span class="label">${escapeHtml(s.prompt)}</span><span class="when">${when}</span></span>${badge}`;
+    item.appendChild(delButton(() => deleteSchedule(s.id)));
+    els.sbList.appendChild(item);
+  });
+}
+
+function buildScheduleForm() {
+  const form = document.createElement("div");
+  form.className = "sb-form";
+  const def = new Date(Date.now() + 5 * 60000);            // default: 5 min from now
+  const local = new Date(def.getTime() - def.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  form.innerHTML = `
+    <label>What should it do?</label>
+    <input type="text" id="sch-prompt" placeholder="e.g. Summarize my day" />
+    <label>When</label>
+    <input type="datetime-local" id="sch-when" value="${local}" />
+    <label>Repeat</label>
+    <select id="sch-repeat">
+      <option value="once">Once</option>
+      <option value="hourly">Every hour</option>
+      <option value="daily">Every day</option>
+    </select>
+    <div class="row2">
+      <button class="cancel" id="sch-cancel">Cancel</button>
+      <button class="save" id="sch-save">Schedule</button>
+    </div>`;
+  form.querySelector("#sch-cancel").addEventListener("click", () => { state.addingSchedule = false; renderSidebar(); });
+  form.querySelector("#sch-save").addEventListener("click", () => {
+    const prompt = form.querySelector("#sch-prompt").value.trim();
+    const whenVal = form.querySelector("#sch-when").value;
+    const repeat = form.querySelector("#sch-repeat").value;
+    if (!prompt || !whenVal) return;
+    addSchedule(prompt, new Date(whenVal).getTime(), repeat);
+  });
+  return form;
+}
+
+/* ---------- Scheduler engine ---------- */
+function addSchedule(prompt, time, repeat) {
+  const s = { id: uid(), prompt, time, repeat, fired: false };
+  state.schedules.push(s);
+  saveSchedule(s);
+  state.addingSchedule = false;
+  renderSidebar();
+}
+
+function deleteSchedule(id) {
+  state.schedules = state.schedules.filter(s => s.id !== id);
+  deleteScheduleRemote(id);
+  renderSidebar();
+}
+
+async function deleteProject(id) {
+  const p = state.projects.find(x => x.id === id);
+  if (!p) return;
+  const ok = await uiConfirm(`Delete project "${p.name}"? Its chats are kept and moved to unassigned.`, { danger: true, okText: "Delete" });
+  if (!ok) return;
+  state.chats.forEach(c => { if (c.projectId === id) c.projectId = null; });
+  state.projects = state.projects.filter(x => x.id !== id);
+  if (state.openProjectId === id) state.openProjectId = null;
+  saveProject();   // persist AFTER the mutation, or the write captures the old list
+  renderSidebar();
+}
+
+function fireSchedule(s) {
+  // Runs the scheduled prompt as if you typed it right now, into the active chat.
+  sendText(s.prompt);
+}
+
+function checkSchedules() {
+  if (state.busy) return;                 // wait until the bot is free
+  const now = Date.now();
+  let changed = false;
+  for (const s of state.schedules) {
+    if (s.fired && s.repeat === "once") continue;
+    if (now >= s.time) {
+      fireSchedule(s);
+      if (s.repeat === "hourly" || s.repeat === "daily") {
+        const step = s.repeat === "hourly" ? 3600000 : 86400000;
+        do { s.time += step; } while (s.time <= Date.now());   // skip to next future slot
+      } else {
+        s.fired = true;
+      }
+      saveSchedule(s);
+      changed = true;
+      break;                              // fire at most one per tick to avoid overlap
+    }
+  }
+  if (changed && state.activeTab === "scheduled") renderSidebar();
+}
+
+function startScheduler() {
+  checkSchedules();
+  setInterval(checkSchedules, 10000);     // check every 10s
+}
+
+els.menuBtn.addEventListener("click", () => els.sidebar.classList.toggle("collapsed"));
+els.tabChats.addEventListener("click", () => setTab("chats"));
+els.tabProjects.addEventListener("click", () => setTab("projects"));
+els.tabScheduled.addEventListener("click", () => setTab("scheduled"));
+els.sbNew.addEventListener("click", () => {
+  if (state.activeTab === "chats") newChat();
+  else if (state.activeTab === "projects") {
+    if (state.openProjectId) newChat(state.openProjectId);
+    else newProject();
+  } else { state.addingSchedule = true; renderSidebar(); }
+});
+
+/* ---------- Attach button + drag-and-drop ---------- */
+els.attachBtn.addEventListener("click", () => els.fileInput.click());
+els.fileInput.addEventListener("change", () => {
+  if (els.fileInput.files.length) addPendingFiles(els.fileInput.files);
+  els.fileInput.value = "";   // allow re-selecting the same file
+});
+
+let dragDepth = 0;
+window.addEventListener("dragenter", e => { e.preventDefault(); dragDepth++; els.drop.classList.add("show"); });
+window.addEventListener("dragover", e => { e.preventDefault(); });
+window.addEventListener("dragleave", e => { dragDepth--; if (dragDepth <= 0) { dragDepth = 0; els.drop.classList.remove("show"); } });
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  dragDepth = 0;
+  els.drop.classList.remove("show");
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+    addPendingFiles(e.dataTransfer.files);
+  }
+});
+
+/* ---------- Options screen ---------- */
+function applySettings() {
+  const s = state.settings;
+  CONFIG.botName = (s.botName || "Assistant").trim() || "Assistant";
+  CONFIG.avatar  = (s.avatar  || "AI").trim() || "AI";
+  CONFIG.greeting = s.greeting;
+  els.botName.textContent = CONFIG.botName;
+  els.logo.textContent = CONFIG.avatar;
+  document.title = CONFIG.botName;
+  if (s.theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", s.theme);
+}
+
+function fillOptionsForm() {
+  const s = state.settings;
+  els.optTheme.value = s.theme;
+  els.optBotName.value = s.botName;
+  els.optAvatar.value = s.avatar;
+  els.optGreeting.value = s.greeting || "";
+  els.optEnter.checked = !!s.sendOnEnter;
+  els.optTyping.checked = !!s.showTyping;
+  els.optApiEndpoint.value = s.apiEndpoint || "";
+}
+
+function openOptions() {
+  fillOptionsForm();
+  els.optScreen.classList.add("show");
+}
+function closeOptions() {
+  els.optScreen.classList.remove("show");
+}
+
+function readOptionsForm() {
+  state.settings = {
+    theme: els.optTheme.value,
+    botName: els.optBotName.value,
+    avatar: els.optAvatar.value,
+    greeting: els.optGreeting.value,
+    sendOnEnter: els.optEnter.checked,
+    showTyping: els.optTyping.checked,
+    apiEndpoint: els.optApiEndpoint.value.trim() || DEFAULT_SETTINGS.apiEndpoint,
+  };
+}
+
+els.optionsBtn.addEventListener("click", openOptions);
+els.optClose.addEventListener("click", closeOptions);
+els.optScreen.addEventListener("click", e => { if (e.target === els.optScreen) closeOptions(); });
+els.optSave.addEventListener("click", () => {
+  readOptionsForm();
+  applySettings();
+  saveSettings(state.settings);
+  closeOptions();
+});
+els.optReset.addEventListener("click", () => {
+  state.settings = { ...DEFAULT_SETTINGS };
+  fillOptionsForm();
+  applySettings();
+});
+
+function greet() {
+  if (CONFIG.greeting) renderMessage("assistant", CONFIG.greeting);
+}
+
+async function init() {
+  const saved = await loadSettings();
+  if (saved) state.settings = { ...DEFAULT_SETTINGS, ...saved };
+  applySettings();
+
+  state.projects = (await loadProjects()) || [];
+  state.chats = (await loadChats()) || [];
+  state.schedules = (await loadSchedules()) || [];
+  state.chats.forEach(c => { if (!("projectId" in c)) c.projectId = null; });   // backward-compat
+
+  setTab("chats");
+  if (state.chats.length) {
+    openChat(state.chats[0].id);
+  } else {
+    newChat();   // creates the first chat, which greets + renders the sidebar
+  }
+
+  startScheduler();   // begin watching for scheduled asks
+}
+
+init();
+</script>
+</body>
+</html>
