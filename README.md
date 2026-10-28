@@ -1,4 +1,4 @@
-# chatbot
+# Chatbot
 
 A self-contained chat interface with its own conversation memory and MCP tool
 support. One Node backend, zero npm dependencies, no database. Clone it, set one
