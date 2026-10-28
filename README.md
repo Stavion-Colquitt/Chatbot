@@ -44,6 +44,9 @@ $env:ANTHROPIC_API_KEY = "..."
 node server.js
 ```
 
+Or put the same variables in a `.env` file next to `server.js` (one `KEY=value`
+per line). It is gitignored, and real environment variables take precedence.
+
 The startup banner reports which backend it selected, so you can confirm at a
 glance that it picked up your configuration.
 

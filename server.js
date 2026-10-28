@@ -17,6 +17,21 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
+// Load KEY=value pairs from a .env file next to this one, if there is one.
+// Real environment variables always win. .env is gitignored here; a private
+// copy of the repo can commit its own so a fresh clone runs with its keys.
+(function loadDotEnv() {
+  let text;
+  try { text = fs.readFileSync(path.join(__dirname, ".env"), "utf8"); } catch (e) { return; }
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m || Object.prototype.hasOwnProperty.call(process.env, m[1])) continue;
+    let v = m[2];
+    if (/^(["']).*\1$/.test(v)) v = v.slice(1, -1);
+    process.env[m[1]] = v;
+  }
+})();
+
 const PORT = process.env.PORT || 8787;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MEMORY_FILE = process.env.MEMORY_FILE || path.join(__dirname, "memory.json");
