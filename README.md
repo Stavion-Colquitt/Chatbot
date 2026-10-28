@@ -12,13 +12,37 @@ environment variable, run it.
 - **Portable** — the same clone runs on any machine with Node 18+; your keys,
   conversations and server list stay local and out of git
 
-## Running it
+## Installing and running it
+
+**1. Install Node.js 18 or newer.** That is the only requirement — it includes
+`npm` and `npx`. Get the LTS version from [nodejs.org](https://nodejs.org), or:
+
+```powershell
+winget install OpenJS.NodeJS.LTS      # Windows
+brew install node                     # macOS
+```
+
+Check it with `node --version`.
+
+**2. Get the code.**
+
+```
+git clone https://github.com/Stavion-Colquitt/chatbot.git
+cd chatbot
+```
+
+**3. Dependencies: none.** The chatbot and the bundled Fetch server use only
+Node's built-in modules, so there is no `npm install` step. (MCP servers you add
+yourself may have their own — see [Installing an MCP server's dependencies](#installing-an-mcp-servers-dependencies).)
+
+**4. Set a model key and start it.**
 
 ```
 node server.js
 ```
 
-Then open http://localhost:8787
+Then open http://localhost:8787. With no key set it still runs and tells you
+what to set — see the next section.
 
 ## Choosing a model backend
 
@@ -162,6 +186,23 @@ too: `{"command": "node", "args": ["<repo>/mcp/fetch.js"]}`.
 Its tool interface is modeled on the official
 [Fetch reference server](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
 — see [Credits](#credits).
+
+### Installing an MCP server's dependencies
+
+The chatbot doesn't install servers for you — each MCP server is its own program
+and brings its own dependencies. Install them once per machine, then add the
+server in Options:
+
+| The server is… | Install | Config `command` / `args` |
+|---|---|---|
+| An npm package (most published servers) | nothing — `npx` downloads it on first start (needs internet once) | `npx`, `["-y", "<package>@<version>"]` |
+| A Node project you downloaded | `npm install` in its folder (and `npm run build` if it has a build step) | `node`, `["<folder>/build/index.js"]` |
+| A Python project | `pip install -r requirements.txt` in its folder (or `uv sync` if it uses uv) | `python`, `["<folder>/server.py"]` |
+| A Python package | `uvx` / `pipx` fetches it on first start | `uvx`, `["<package>"]` |
+
+If a server's dependencies are missing it shows a red dot in Options with the
+error (for example `ERR_MODULE_NOT_FOUND` or `ModuleNotFoundError`); install
+them and press ↻ to restart it.
 
 **Portable paths.** Config values can use `${HOME}`, `~`, `%VAR%` or `${VAR}`;
 they're expanded when the server starts. `${APP_DIR}` is the folder this
