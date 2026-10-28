@@ -328,7 +328,7 @@
   /* in-DOM confirm/prompt dialog (replaces blocked native confirm/prompt) */
   .modal-overlay {
     position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
-    display: none; align-items: center; justify-content: center; z-index: 50;
+    display: none; align-items: center; justify-content: center; z-index: 70;
   }
   .modal-overlay.show { display: flex; }
   .modal {
@@ -416,6 +416,56 @@
   }
   .seg button.active { background: var(--accent); color: var(--accent-text); }
   .seg button:not(.active):hover { background: var(--surface-2); }
+
+  /* MCP tools panel */
+  .mcp-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 10px; }
+  .mcp-btn {
+    border: 1px solid var(--border); background: transparent; color: var(--accent);
+    border-radius: 8px; padding: 7px 11px; font-size: 12px; font-family: inherit; cursor: pointer;
+  }
+  .mcp-btn:hover { background: var(--surface-2); }
+  .mcp-btn:disabled { opacity: 0.5; cursor: default; }
+  .mcp-paste { display: none; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .mcp-paste.show { display: flex; }
+  .mcp-paste textarea {
+    width: 100%; min-height: 110px; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    font-family: ui-monospace, Consolas, monospace; font-size: 12px; outline: none; resize: vertical;
+  }
+  .mcp-paste input {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; font-family: inherit; font-size: 13px; outline: none;
+  }
+  .mcp-msg { font-size: 12px; color: var(--text-muted); min-height: 16px; margin-bottom: 6px; }
+  .mcp-msg.err { color: #d9534f; }
+  .mcp-server { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; margin-bottom: 7px; }
+  .mcp-top { display: flex; align-items: center; gap: 8px; }
+  .mcp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+  .mcp-dot.ready { background: #3fb950; }
+  .mcp-dot.starting { background: #d29922; }
+  .mcp-dot.error { background: #d9534f; }
+  .mcp-name { font-size: 14px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-sub { font-size: 11px; color: var(--text-muted); margin-top: 3px; word-break: break-all; }
+  .mcp-sub.err { color: #d9534f; }
+  .mcp-icon { border: none; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 5px; border-radius: 6px; font-family: inherit; }
+  .mcp-icon:hover { background: var(--surface-2); color: var(--accent); }
+  .mcp-server details { margin-top: 4px; font-size: 12px; }
+  .mcp-server summary { cursor: pointer; color: var(--text-muted); }
+  .mcp-tool { padding: 3px 0 3px 10px; color: var(--text); }
+  .mcp-tool .d { color: var(--text-muted); }
+
+  /* tool calls inside a reply */
+  .tool-calls { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .tool-call { font-size: 12px; background: var(--surface-2); border-radius: 8px; padding: 5px 9px; }
+  .tool-call summary { cursor: pointer; list-style: none; }
+  .tool-call summary::-webkit-details-marker { display: none; }
+  .tool-call.error summary, .tool-call.denied summary { color: #d9534f; }
+  .tool-call pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 2px; font-size: 11px; color: var(--text-muted); font-family: ui-monospace, Consolas, monospace; }
+
+  /* approval dialog */
+  .modal.wide { width: 460px; }
+  .approve-call { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
+  .approve-call pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; font-size: 11px; max-height: 160px; overflow: auto; color: var(--text-muted); font-family: ui-monospace, Consolas, monospace; }
 
   /* project drill-in back row */
   .sb-back {
@@ -549,6 +599,20 @@
           as an environment variable where the server runs &mdash; see the README.
         </p>
 
+        <div class="opt-section">Tools (MCP) <span class="opt-note">— local servers on this machine</span></div>
+        <div class="mcp-actions">
+          <button type="button" class="mcp-btn" id="mcp-import">Import from Claude Desktop</button>
+          <button type="button" class="mcp-btn" id="mcp-add-toggle">Add server</button>
+          <button type="button" class="mcp-btn" id="mcp-refresh">Refresh</button>
+        </div>
+        <div class="mcp-paste" id="mcp-paste">
+          <input type="text" id="mcp-name" placeholder="Name (only needed for a bare {command, args} snippet)" />
+          <textarea id="mcp-json" spellcheck="false" placeholder='{ "mcpServers": { "files": { "command": "node", "args": ["C:\\path\\to\\server.js"] } } }'></textarea>
+          <div class="mcp-actions"><button type="button" class="mcp-btn" id="mcp-add">Connect</button></div>
+        </div>
+        <div class="mcp-msg" id="mcp-msg"></div>
+        <div id="mcp-list"></div>
+
         <p class="opt-warn">Never put API keys here — this file is client-side and public. Keys belong on the server.</p>
 
         <div class="opt-actions">
@@ -623,13 +687,54 @@ async function callApi(history, endpoint) {
       botName: state.settings.botName || undefined,
     }),
   });
+  let data = await readReply(res);
+
+  // Tool calls that need a yes/no pause here until you answer, then resume.
+  while (data.pending) {
+    hideTyping();
+    const decisions = await uiApproveTools(data.pending.calls);
+    if (state.settings.showTyping) showTyping();
+    data = await readReply(await fetch(endpoint.replace(/\/?$/, "") + "/continue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: data.pending.id, decisions }),
+    }));
+  }
+  return {
+    reply: data.reply ?? data.choices?.[0]?.message?.content ?? JSON.stringify(data),
+    tools: data.tools || [],
+  };
+}
+
+async function readReply(res) {
   if (!res.ok) {
     let detail = "";
     try { detail = (await res.json()).error || ""; } catch (e) { /* non-JSON body */ }
     throw new Error(detail || ("Server error " + res.status));
   }
-  const data = await res.json();
-  return data.reply ?? data.choices?.[0]?.message?.content ?? JSON.stringify(data);
+  return res.json();
+}
+
+/* Approval dialog for tool calls. Resolves { callId: "allow" | "always" | "deny" }. */
+function uiApproveTools(calls) {
+  return new Promise(resolve => {
+    const list = calls.map(c =>
+      `<div class="approve-call"><b>${escapeHtml(c.tool)}</b> <span class="opt-note">on ${escapeHtml(c.server || "?")}</span>` +
+      `<pre>${escapeHtml(JSON.stringify(c.input, null, 2))}</pre></div>`).join("");
+    els.modal.innerHTML =
+      `<div class="modal wide"><p>${escapeHtml(CONFIG.botName)} wants to run ${calls.length === 1 ? "a tool" : calls.length + " tools"}:</p>${list}` +
+      `<div class="actions"><button id="m-deny">Deny</button>` +
+      `<button id="m-always">Always allow</button>` +
+      `<button class="primary" id="m-once">Allow once</button></div></div>`;
+    els.modal.classList.add("show");
+    const close = val => {
+      els.modal.classList.remove("show"); els.modal.innerHTML = "";
+      const out = {}; calls.forEach(c => { out[c.id] = val; }); resolve(out);
+    };
+    els.modal.querySelector("#m-deny").onclick = () => close("deny");
+    els.modal.querySelector("#m-always").onclick = () => close("always");
+    els.modal.querySelector("#m-once").onclick = () => close("allow");
+  });
 }
 
 
@@ -678,8 +783,22 @@ function persistState() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(_stateCache),
     }).catch(e => console.warn("state save failed:", e.message));
+    _saveTimer = null;
   }, 400);
 }
+
+/* A reload or tab close inside the debounce window would drop the last edits.
+   Flush on pagehide; keepalive lets the request outlive the page (browsers cap
+   keepalive bodies at 64 KB, so a very large state goes as a normal request). */
+window.addEventListener("pagehide", () => {
+  if (!_saveTimer) return;
+  clearTimeout(_saveTimer); _saveTimer = null;
+  const body = JSON.stringify(_stateCache);
+  fetch(STATE_URL, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body, keepalive: body.length < 60000,
+  }).catch(() => {});
+});
 
 async function loadChats()     { return (await fetchState()).chats || []; }
 async function loadProjects()  { return (await fetchState()).projects || []; }
@@ -865,13 +984,22 @@ function attachmentsHtml(attachments) {
   return html + "</div>";
 }
 
-function renderMessage(role, content, attachments) {
+function toolsHtml(tools) {
+  if (!tools || !tools.length) return "";
+  const icon = { ok: "✓", error: "✗", denied: "⊘" };
+  return '<div class="tool-calls">' + tools.map(t =>
+    `<details class="tool-call ${escapeHtml(t.status || "")}"><summary>🔧 ${escapeHtml(t.tool)} ` +
+    `<span class="opt-note">· ${escapeHtml(t.server || "")}</span> ${icon[t.status] || ""}${t.status === "denied" ? " denied" : ""}</summary>` +
+    `<pre>in:  ${escapeHtml(t.input || "")}${t.output ? "\nout: " + escapeHtml(t.output) : ""}</pre></details>`).join("") + "</div>";
+}
+
+function renderMessage(role, content, attachments, tools) {
   const row = document.createElement("div");
   row.className = "row " + (role === "user" ? "user" : "bot");
   const avatar = role === "user" ? "" : `<div class="avatar">${escapeHtml(CONFIG.avatar)}</div>`;
   const atts = attachmentsHtml(attachments);
   const text = content ? `<div class="bubble-text">${escapeHtml(content)}</div>` : "";
-  row.innerHTML = `${avatar}<div class="bubble">${atts}${text}</div>`;
+  row.innerHTML = `${avatar}<div class="bubble">${toolsHtml(tools)}${atts}${text}</div>`;
   els.messages.appendChild(row);
   scrollToBottom();
 }
@@ -925,11 +1053,14 @@ async function sendText(text, attachments) {
   setBusy(true);
   if (state.settings.showTyping) showTyping();
   try {
-    const reply = await generateResponse(state.messages);
+    const out = await generateResponse(state.messages);
     hideTyping();
+    const reply = typeof out === "string" ? out : out.reply;
+    const tools = (out && out.tools) || [];
     const botMsg = { role: "assistant", content: reply };
+    if (tools.length) botMsg.tools = tools;
     state.messages.push(botMsg);
-    renderMessage("assistant", reply);
+    renderMessage("assistant", reply, null, tools);
     saveMessage(state.activeChatId, botMsg);
     saveChat(currentChat());
   } catch (err) {
@@ -1051,7 +1182,7 @@ function openChat(id) {
   state.messages = chat.messages;          // live reference: pushes mutate the chat
   els.messages.innerHTML = "";
   if (chat.messages.length) {
-    chat.messages.forEach(m => renderMessage(m.role, m.content, m.attachments));
+    chat.messages.forEach(m => renderMessage(m.role, m.content, m.attachments, m.tools));
   } else {
     greet();
   }
@@ -1336,6 +1467,8 @@ function fillOptionsForm() {
 
 function openOptions() {
   fillOptionsForm();
+  mcpMessage("");
+  loadMcp();
   els.optScreen.classList.add("show");
 }
 function closeOptions() {
@@ -1367,6 +1500,117 @@ els.optReset.addEventListener("click", () => {
   state.settings = { ...DEFAULT_SETTINGS };
   fillOptionsForm();
   applySettings();
+});
+
+/* ---------- Tools (MCP) panel ----------
+   Talks to /api/mcp on the server. Changes apply immediately (no Save). */
+const mcpEl = id => document.getElementById(id);
+
+function mcpMessage(text, isErr) {
+  const m = mcpEl("mcp-msg");
+  m.textContent = text || "";
+  m.classList.toggle("err", !!isErr);
+}
+
+async function mcpCall(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("error " + res.status));
+  return data;
+}
+
+function renderMcp(data) {
+  const list = mcpEl("mcp-list");
+  mcpEl("mcp-import").style.display = data.claudeDesktopConfig ? "" : "none";
+  if (!data.toolsActive && data.servers.length) {
+    mcpMessage("Tools only run when the server uses the Anthropic backend.", true);
+  }
+  if (!data.servers.length) {
+    list.innerHTML = '<div class="mcp-sub">No servers yet. Import them from Claude Desktop or paste a config.</div>';
+    return;
+  }
+  const enabledFirst = data.servers.slice().sort((a, b) => (b.enabled - a.enabled) || a.name.localeCompare(b.name));
+  list.innerHTML = enabledFirst.map(s => {
+    const status = s.enabled ? s.status : "off";
+    const sub = s.error
+      ? `<div class="mcp-sub err">${escapeHtml(s.error)}</div>`
+      : `<div class="mcp-sub">${escapeHtml([s.command, ...s.args].join(" ").slice(0, 160))}</div>`;
+    const info = (s.instructions ? `<div class="mcp-sub" title="${escapeHtml(s.instructions)}">ℹ︎ sends its own usage instructions</div>` : "") +
+      (s.notes ? `<div class="mcp-sub">📝 ${escapeHtml(s.notes)}</div>` : "");
+    const tools = s.tools.length
+      ? `<details><summary>${s.tools.length} tool${s.tools.length === 1 ? "" : "s"}` +
+        `${s.tools.some(t => t.alwaysAllow) ? " · some always allowed" : ""}</summary>` +
+        s.tools.map(t => `<div class="mcp-tool">${t.alwaysAllow ? "✓ " : ""}${escapeHtml(t.name)}` +
+          `<span class="d">(${escapeHtml((t.params || []).join(", ") || "no params")}) ${escapeHtml(t.description)}</span></div>`).join("") +
+        `</details>`
+      : "";
+    const n = encodeURIComponent(s.name);
+    return `<div class="mcp-server"><div class="mcp-top"><span class="mcp-dot ${escapeHtml(status)}"></span>` +
+      `<span class="mcp-name">${escapeHtml(s.name)}</span>` +
+      `<input type="checkbox" title="Enabled" data-mcp-toggle="${n}" ${s.enabled ? "checked" : ""} />` +
+      (s.enabled ? `<button class="mcp-icon" data-mcp-act="restart" data-name="${n}" title="Restart">↻</button>` : "") +
+      (s.tools.some(t => t.alwaysAllow) ? `<button class="mcp-icon" data-mcp-act="forget-approvals" data-name="${n}" title="Ask again for every tool">reset approvals</button>` : "") +
+      `<button class="mcp-icon" data-mcp-act="notes" data-name="${n}" data-notes="${escapeHtml(s.notes || "")}" title="Notes the model should follow for this server">notes</button>` +
+      `<button class="mcp-icon" data-mcp-act="delete" data-name="${n}" title="Remove">✕</button>` +
+      `</div>${sub}${info}${tools}</div>`;
+  }).join("");
+}
+
+async function loadMcp() {
+  try { renderMcp(await mcpCall("GET", "/api/mcp")); }
+  catch (e) { mcpMessage("Couldn't reach the server's MCP endpoint: " + e.message, true); }
+}
+
+async function mcpDo(label, fn) {
+  mcpMessage(label);
+  try { const data = await fn(); mcpMessage(""); renderMcp(data); }
+  catch (e) { mcpMessage(e.message, true); }
+}
+
+mcpEl("mcp-import").addEventListener("click", () =>
+  mcpDo("Importing… servers come in switched off — tick the ones you want.", async () => {
+    const data = await mcpCall("POST", "/api/mcp/import");
+    setTimeout(() => mcpMessage("Imported. Tick a server to start it."), 0);
+    return data;
+  }));
+mcpEl("mcp-refresh").addEventListener("click", () => mcpDo("Refreshing…", () => mcpCall("GET", "/api/mcp")));
+mcpEl("mcp-add-toggle").addEventListener("click", () => mcpEl("mcp-paste").classList.toggle("show"));
+mcpEl("mcp-add").addEventListener("click", () => {
+  let config;
+  try { config = JSON.parse(mcpEl("mcp-json").value); }
+  catch (e) { mcpMessage("That isn't valid JSON: " + e.message, true); return; }
+  mcpDo("Starting server…", async () => {
+    const data = await mcpCall("POST", "/api/mcp/servers", { config, name: mcpEl("mcp-name").value.trim() || undefined });
+    mcpEl("mcp-json").value = ""; mcpEl("mcp-name").value = "";
+    mcpEl("mcp-paste").classList.remove("show");
+    return data;
+  });
+});
+mcpEl("mcp-list").addEventListener("change", e => {
+  const name = e.target.dataset.mcpToggle;
+  if (!name) return;
+  const on = e.target.checked;
+  mcpDo(on ? "Starting " + decodeURIComponent(name) + "…" : "Stopping…",
+    () => mcpCall("POST", `/api/mcp/servers/${name}/${on ? "enable" : "disable"}`));
+});
+mcpEl("mcp-list").addEventListener("click", async e => {
+  const btn = e.target.closest("[data-mcp-act]");
+  if (!btn) return;
+  const name = btn.dataset.name, act = btn.dataset.mcpAct;
+  if (act === "notes") {
+    const notes = await uiPrompt(`Notes for ${decodeURIComponent(name)} — the model follows these whenever this server is on.`,
+      { value: btn.dataset.notes || "", placeholder: "e.g. Always ask before placing orders", okText: "Save" });
+    if (notes !== null) mcpDo("Saving notes…", () => mcpCall("POST", `/api/mcp/servers/${name}/notes`, { notes }));
+  } else if (act === "delete") {
+    const ok = await uiConfirm(`Remove ${decodeURIComponent(name)} from the chatbot? (Claude Desktop is not affected.)`, { danger: true, okText: "Remove" });
+    if (ok) mcpDo("Removing…", () => mcpCall("DELETE", `/api/mcp/servers/${name}`));
+  } else {
+    mcpDo(act === "restart" ? "Restarting…" : "Resetting…", () => mcpCall("POST", `/api/mcp/servers/${name}/${act}`));
+  }
 });
 
 function greet() {

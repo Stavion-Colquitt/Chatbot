@@ -1,10 +1,16 @@
 # chatbot
 
-A self-contained chat interface with its own conversation memory. One Node file,
-zero dependencies, no database, no cloud services. Clone it, set one environment
-variable, run it.
+A self-contained chat interface with its own conversation memory and MCP tool
+support. One Node backend, zero npm dependencies, no database. Clone it, set one
+environment variable, run it.
 
-Built to be portable — the same clone runs on any machine with Node installed.
+- **Memory** — remembers past conversations, scoped by project, with hybrid
+  keyword + vector recall
+- **Tools** — connect any local MCP server (or import them all from Claude
+  Desktop); every tool call asks for your approval first
+- **Fetch built in** — a bundled, zero-dependency MCP server for reading web pages
+- **Portable** — the same clone runs on any machine with Node 18+; your keys,
+  conversations and server list stay local and out of git
 
 ## Running it
 
@@ -125,6 +131,58 @@ keyword recall and the chat keeps working.
 | `VECTOR_MIN`      | 0.3             | Cosine floor for a vector hit             |
 | `EMBED_TIMEOUT_MS`| 15000           | Give up on the embedding call after this  |
 
+## Tools (MCP)
+
+The chatbot can use local MCP servers — the same stdio servers Claude Desktop
+runs. The backend starts each one as a child process on this machine and talks
+to it over stdin/stdout. No npm packages, no network for the MCP side.
+
+Open **Options → Tools (MCP)**:
+
+- **Import from Claude Desktop** pulls every server from your Claude Desktop
+  config. They come in switched off; tick the ones you want.
+- **Add server** takes a pasted config: a full `{"mcpServers": {...}}` block,
+  a `{"name": {command, args}}` map, or a bare `{command, args}` plus a name.
+- Each server shows status, its tools, and restart / remove controls.
+
+Every tool call stops for approval — **Deny**, **Allow once** or **Always
+allow** (remembered per tool; "reset approvals" clears it). Calls show up as
+expandable cards above the reply.
+
+**Bundled: Fetch.** `mcp/fetch.js` ships with the repo — a zero-dependency
+MCP server that reads web pages (HTML converted to markdown, long pages
+returned in chunks the model pages through). It is added and switched on the
+first time the server starts on a machine; remove it in Options and it stays
+removed. Fetched pages are labelled as untrusted content, and every call still
+goes through approval. It's a plain MCP server, so Claude Desktop can use it
+too: `{"command": "node", "args": ["<repo>/mcp/fetch.js"]}`.
+
+**Portable paths.** Config values can use `${HOME}`, `~`, `%VAR%` or `${VAR}`;
+they're expanded when the server starts. `${APP_DIR}` is the folder this
+repo is cloned into. Imported and pasted configs get this
+machine's home folder rewritten to `${HOME}` automatically, so if your servers
+live at the same place under your home folder on every machine, the same
+`mcp.json` works everywhere:
+
+```json
+{ "mcpServers": { "my-server": { "command": "python",
+  "args": ["${HOME}/mcp-servers/my-server/server.py"] } } }
+```
+
+Config is saved to `mcp.json` (gitignored: servers are installed per machine,
+and `env` blocks can hold tokens). Tool use runs on the Anthropic backend;
+other backends chat without tools. Only stdio servers are supported — entries
+with a `url` are skipped on import.
+
+| Variable           | Default      | Effect                                   |
+|--------------------|--------------|------------------------------------------|
+| `MCP_FILE`         | `./mcp.json` | Where the server list is stored          |
+| `MAX_TOOL_ROUNDS`  | 10           | Tool round-trips allowed per message     |
+| `TOOL_TIMEOUT_MS`  | 120000       | Give up on a single tool call after this |
+
+Each enabled tool's description is sent with every message, so enable the
+servers you're using rather than all of them.
+
 ## Interface state
 
 Chats, projects, schedules and the settings you pick in Options persist to
@@ -141,6 +199,10 @@ model recalls from, `state.json` is what the interface needs to redraw itself.
 | POST   | `/api/chat`          | Send a conversation, get a reply              |
 | GET    | `/api/state`         | Load chats, projects, schedules, settings     |
 | PUT    | `/api/state`         | Save them                                     |
+| POST   | `/api/chat/continue` | Resume a turn after approving tool calls      |
+| GET    | `/api/mcp`           | MCP servers, status and tools                 |
+| POST   | `/api/mcp/import`    | Import servers from Claude Desktop            |
+| POST   | `/api/mcp/servers`   | Add servers from a pasted config              |
 | GET    | `/api/memory/stats`  | Turns, chats, backend, embedding model, vector count |
 | GET    | `/api/memory/search?q=…&chatId=…&projectId=…` | What recall would surface, with score and source |
 
@@ -151,6 +213,8 @@ server.js            the whole backend
 public/chatbot.html  the interface
 memory.json          created on first run, gitignored
 memory.vectors.json  created when embeddings are on, gitignored
+mcp/fetch.js         bundled Fetch MCP server (zero dependencies)
+mcp.json             your MCP servers, gitignored
 state.json           created on first run, gitignored
 ```
 

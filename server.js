@@ -362,6 +362,28 @@ function sanitize(messages) {
     .map(m => ({ role: m.role, content: m.content }));
 }
 
+const ANTHROPIC_URL = (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "") + "/v1/messages";
+
+async function anthropicRequest(system, messages, model, tools) {
+  const res = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: model || DEFAULT_MODEL || "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: system || undefined,
+      messages,
+      tools: tools && tools.length ? tools : undefined,
+    }),
+  });
+  if (!res.ok) throw new Error("anthropic " + res.status + ": " + (await res.text()).slice(0, 300));
+  return res.json();
+}
+
 async function generateReply(rawMessages, model) {
   const messages = sanitize(rawMessages);
   const backend = activeBackend();
@@ -385,22 +407,7 @@ async function generateReply(rawMessages, model) {
     // Anthropic keeps the system prompt out of messages[], so split it off.
     const system = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
     const rest = messages.filter(m => m.role !== "system");
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: chosen || "claude-sonnet-4-6",
-        max_tokens: 2048,
-        system: system || undefined,
-        messages: rest,
-      }),
-    });
-    if (!res.ok) throw new Error("anthropic " + res.status + ": " + (await res.text()).slice(0, 300));
-    const data = await res.json();
+    const data = await anthropicRequest(system, rest, chosen);
     return (data.content || []).filter(b => b.type === "text").map(b => b.text).join("") || "";
   }
 
@@ -426,9 +433,524 @@ async function generateReply(rawMessages, model) {
     "Memory is still recording this conversation either way.";
 }
 
-// Full chat turn: recall -> augment -> model -> remember.
+// ---------------------------------------------------------------------------
+// MCP TOOLS: connect local MCP servers (stdio) and let the model use them.
+//
+// Everything here is local: each server is a program on this machine that the
+// backend starts as a child process and talks to over stdin/stdout (JSON-RPC,
+// one message per line). No npm packages, no network for the MCP side.
+//
+// Config lives in mcp.json next to this file (gitignored -- servers are
+// installed per machine). Same shape as Claude Desktop's config, plus two
+// optional keys per server:
+//   { "mcpServers": { "name": { "command": "node", "args": [...], "env": {...},
+//                               "enabled": true, "alwaysAllow": ["tool_name"] } } }
+//
+// Safety: every tool call pauses for approval in the UI unless that tool is in
+// the server's alwaysAllow list (the "Always allow" button adds it).
+// Tool use runs on the Anthropic backend; other backends chat without tools.
+// ---------------------------------------------------------------------------
+const { spawn, spawnSync } = require("child_process");
+const MCP_FILE         = process.env.MCP_FILE || path.join(__dirname, "mcp.json");
+const MAX_TOOL_ROUNDS  = Number(process.env.MAX_TOOL_ROUNDS || 10);
+const TOOL_TIMEOUT     = Number(process.env.TOOL_TIMEOUT_MS || 120000);
+const TOOL_RESULT_MAX  = 100000;   // chars of tool output sent back to the model
+const IS_WIN           = process.platform === "win32";
+
+function claudeDesktopConfigPath() {
+  if (process.env.CLAUDE_DESKTOP_CONFIG) return process.env.CLAUDE_DESKTOP_CONFIG;
+  const home = require("os").homedir();
+  if (IS_WIN) return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "Claude", "claude_desktop_config.json");
+  if (process.platform === "darwin") return path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+  return path.join(home, ".config", "Claude", "claude_desktop_config.json");
+}
+
+// PORTABLE PATHS. Config values may use ${HOME}, ~, %VAR% or ${VAR}; they're
+// expanded when a server starts, so one mcp.json works on any machine where the
+// servers sit at the same place relative to the home folder. Imported and
+// pasted configs have this machine's home folder rewritten to ${HOME}.
+const HOME_DIR = require("os").homedir();
+
+function expandVars(v) {
+  if (typeof v !== "string") return v;
+  let out = v
+    .replace(/^~(?=$|[\\/])/, HOME_DIR)
+    .replace(/\$\{(\w+)\}|%(\w+)%/g, (m, a, b) => {
+      const k = a || b;
+      if (k === "HOME") return HOME_DIR;
+      if (k === "APP_DIR") return __dirname;         // wherever this repo is cloned
+      const hit = Object.keys(process.env).find(e => IS_WIN ? e.toUpperCase() === k.toUpperCase() : e === k);
+      return hit ? process.env[hit] : m;            // unknown variable: leave it visible
+    });
+  // ${HOME}\a\b written on Windows still resolves on mac/Linux, and vice versa.
+  // Done per item so path lists ("a,b;c") and --flag=path values work too.
+  return out.split(/([,;=])/).map(seg => seg.startsWith(HOME_DIR)
+    ? HOME_DIR + seg.slice(HOME_DIR.length).replace(/[\\/]/g, path.sep) : seg).join("");
+}
+
+function portable(cfg) {
+  // match the home folder with either slash style (and any case on Windows)
+  const esc = HOME_DIR.split(/[\\/]/).map(seg => seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\\\/]");
+  // at the start of a value, or of an item in a list / --flag=value
+  const re = new RegExp("(^|[,;=])" + esc + "(?=$|[\\\\/,;])", IS_WIN ? "gi" : "g");
+  const fix = v => (typeof v === "string" ? v.replace(re, "$1${HOME}") : v);
+  const out = { ...cfg, command: fix(cfg.command) };
+  if (Array.isArray(cfg.args)) out.args = cfg.args.map(fix);
+  if (cfg.cwd) out.cwd = fix(cfg.cwd);
+  if (cfg.env) out.env = Object.fromEntries(Object.entries(cfg.env).map(([k, v]) => [k, fix(v)]));
+  return out;
+}
+
+function loadMcpConfig() {
+  try {
+    const c = JSON.parse(fs.readFileSync(MCP_FILE, "utf8"));
+    if (c && typeof c.mcpServers === "object") return c;
+  } catch (e) { /* none yet */ }
+  return { mcpServers: {} };
+}
+let mcpConfig = loadMcpConfig();
+function saveMcpConfig() { fs.writeFileSync(MCP_FILE, JSON.stringify(mcpConfig, null, 2)); }
+
+// Servers that ship inside this repo (./mcp). Each is added once per machine;
+// remove one in Options and it stays removed. A same-named server you already
+// have (e.g. imported from Claude Desktop) is left alone.
+const BUNDLED_SERVERS = {
+  Fetch: { command: "node", args: ["${APP_DIR}/mcp/fetch.js"], enabled: true, alwaysAllow: [] },
+};
+(function addBundled() {
+  const done = new Set(mcpConfig.bundledAdded || []);
+  let changed = false;
+  for (const [name, cfg] of Object.entries(BUNDLED_SERVERS)) {
+    if (done.has(name)) continue;
+    if (!mcpConfig.mcpServers[name]) mcpConfig.mcpServers[name] = { ...cfg, args: [...cfg.args] };
+    done.add(name); changed = true;
+  }
+  if (changed) {
+    mcpConfig.bundledAdded = [...done];
+    try { saveMcpConfig(); } catch (e) { console.warn("mcp config save skipped:", e.message); }
+  }
+})();
+
+class McpClient {
+  constructor(name) {
+    this.name = name; this.status = "stopped"; this.error = null; this.tools = []; this.instructions = "";
+    this.proc = null; this.buf = ""; this.stderr = ""; this.nextId = 1; this.pending = new Map();
+  }
+  get cfg() { return mcpConfig.mcpServers[this.name] || {}; }
+
+  async start() {
+    this.stop();
+    const raw = this.cfg;
+    const cfg = {
+      ...raw, command: expandVars(raw.command), args: (raw.args || []).map(a => expandVars(String(a))),
+      cwd: raw.cwd ? expandVars(raw.cwd) : undefined,
+      env: Object.fromEntries(Object.entries(raw.env || {}).map(([k, v]) => [k, expandVars(String(v))])),
+    };
+    this.status = "starting"; this.error = null; this.stderr = ""; this.buf = ""; this.tools = [];
+    // On Windows, commands like npx / npm are .cmd shims that only resolve
+    // through a shell, so go through cmd.exe and quote args with spaces.
+    const q = a => (/[\s"&|<>^]/.test(a) ? '"' + a.replace(/"/g, '""') + '"' : a);
+    const args = (cfg.args || []).map(String);
+    try {
+      this.proc = spawn(IS_WIN ? q(cfg.command) : cfg.command, IS_WIN ? args.map(q) : args, {
+        cwd: cfg.cwd || undefined,
+        env: { ...process.env, ...(cfg.env || {}) },
+        shell: IS_WIN, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (e) { this.fail(e.message); return; }
+    const proc = this.proc;
+    proc.on("error", e => { if (this.proc === proc) this.fail(e.message); });
+    proc.on("exit", code => {
+      if (this.proc !== proc || this.status === "stopped") return;
+      this.fail("exited (code " + code + ")" + (this.stderr ? ": " + this.stderr.trim().slice(-300) : ""));
+    });
+    proc.stderr.on("data", d => { this.stderr = (this.stderr + d).slice(-4000); });
+    proc.stdout.on("data", d => this.onData(d));
+    proc.stdin.on("error", () => {});
+    try {
+      const init = await this.request("initialize", {
+        protocolVersion: "2025-06-18", capabilities: {},
+        clientInfo: { name: "chatbot", version: "1.0.0" },
+      }, 60000);
+      // servers can ship their own usage instructions; pass them to the model
+      this.instructions = (init && typeof init.instructions === "string") ? init.instructions.trim() : "";
+      this.notify("notifications/initialized");
+      await this.refreshTools();
+      this.status = "ready";
+    } catch (e) { this.fail(e.message); }
+  }
+
+  async refreshTools() {
+    const tools = []; let cursor;
+    do {
+      const r = await this.request("tools/list", cursor ? { cursor } : {}, 30000);
+      tools.push(...(r.tools || []));
+      cursor = r.nextCursor;
+    } while (cursor);
+    this.tools = tools;
+  }
+
+  onData(chunk) {
+    this.buf += chunk;
+    let i;
+    while ((i = this.buf.indexOf("\n")) >= 0) {
+      const line = this.buf.slice(0, i).trim();
+      this.buf = this.buf.slice(i + 1);
+      if (!line) continue;
+      let msg; try { msg = JSON.parse(line); } catch (e) { continue; }   // servers sometimes log to stdout
+      if (msg.id !== undefined && (msg.result !== undefined || msg.error) && this.pending.has(msg.id)) {
+        const p = this.pending.get(msg.id); this.pending.delete(msg.id); clearTimeout(p.timer);
+        msg.error ? p.reject(new Error(msg.error.message || "MCP error")) : p.resolve(msg.result);
+      } else if (msg.method && msg.id !== undefined) {
+        // server -> client request: answer ping, decline the rest
+        this.send(msg.method === "ping" ? { jsonrpc: "2.0", id: msg.id, result: {} }
+          : { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "not supported by this client" } });
+      } else if (msg.method === "notifications/tools/list_changed") {
+        this.refreshTools().catch(() => {});
+      }
+    }
+  }
+
+  send(obj) { if (this.proc && this.proc.stdin.writable) this.proc.stdin.write(JSON.stringify(obj) + "\n"); }
+  notify(method, params) { this.send({ jsonrpc: "2.0", method, ...(params ? { params } : {}) }); }
+  request(method, params, timeout) {
+    return new Promise((resolve, reject) => {
+      if (!this.proc) return reject(new Error("server not running"));
+      const id = this.nextId++;
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(method + " timed out")); }, timeout || TOOL_TIMEOUT);
+      this.pending.set(id, { resolve, reject, timer });
+      this.send({ jsonrpc: "2.0", id, method, params });
+    });
+  }
+  callTool(name, args) { return this.request("tools/call", { name, arguments: args || {} }, TOOL_TIMEOUT); }
+
+  fail(msg) {
+    this.status = "error"; this.error = msg;
+    for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error(msg)); }
+    this.pending.clear();
+  }
+  stop() {
+    const proc = this.proc;
+    this.status = "stopped"; this.proc = null;
+    for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error("server stopped")); }
+    this.pending.clear();
+    if (!proc) return;
+    try {
+      // the shell wrapper on Windows means kill() would orphan the real server
+      if (IS_WIN) spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true });
+      else proc.kill();
+    } catch (e) { /* already gone */ }
+  }
+}
+
+const mcpClients = new Map();   // name -> McpClient
+
+function syncMcp() {
+  // start enabled servers, stop disabled/removed ones; returns when all settle
+  const jobs = [];
+  for (const [name, c] of mcpClients) {
+    const cfg = mcpConfig.mcpServers[name];
+    if (!cfg || cfg.enabled === false) { c.stop(); mcpClients.delete(name); }
+  }
+  for (const [name, cfg] of Object.entries(mcpConfig.mcpServers)) {
+    if (cfg.enabled === false || mcpClients.has(name)) continue;
+    const c = new McpClient(name);
+    mcpClients.set(name, c);
+    jobs.push(c.start());
+  }
+  return Promise.all(jobs);
+}
+
+process.on("exit", () => { for (const c of mcpClients.values()) c.stop(); });
+process.on("SIGINT", () => process.exit(0));
+process.on("SIGTERM", () => process.exit(0));
+
+// Anthropic tool names must match ^[a-zA-Z0-9_-]{1,64}$
+let toolIndex = new Map();   // apiName -> { server, tool, def }
+function toolDefs() {
+  const defs = []; const index = new Map();
+  for (const c of mcpClients.values()) {
+    if (c.status !== "ready") continue;
+    for (const t of c.tools) {
+      let api = (c.name + "__" + t.name).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+      while (index.has(api)) api = api.slice(0, 60) + "_" + index.size;
+      index.set(api, { server: c.name, tool: t.name, def: t });
+      const schema = t.inputSchema && typeof t.inputSchema === "object" ? { ...t.inputSchema } : {};
+      if (schema.type !== "object") schema.type = "object";
+      defs.push({ name: api, description: ((t.description || t.name) + " [via " + c.name + "]").slice(0, 4000), input_schema: schema });
+    }
+  }
+  toolIndex = index;
+  return defs;
+}
+
+function isAlwaysAllowed(server, tool) {
+  const list = (mcpConfig.mcpServers[server] || {}).alwaysAllow || [];
+  return list.includes(tool) || list.includes("*");
+}
+
+function toAnthropicContent(result) {
+  const out = [];
+  for (const c of (result && result.content) || []) {
+    if (c.type === "text") out.push({ type: "text", text: c.text || "(empty)" });
+    else if (c.type === "image" && c.data && /^image\/(png|jpeg|gif|webp)$/.test(c.mimeType || ""))
+      out.push({ type: "image", source: { type: "base64", media_type: c.mimeType, data: c.data } });
+    else if (c.type === "resource" && c.resource) out.push({ type: "text", text: c.resource.text || JSON.stringify(c.resource).slice(0, 2000) });
+    else out.push({ type: "text", text: JSON.stringify(c).slice(0, 2000) });
+  }
+  if (!out.length && result && result.structuredContent) out.push({ type: "text", text: JSON.stringify(result.structuredContent) });
+  if (!out.length) out.push({ type: "text", text: "(no output)" });
+  let budget = TOOL_RESULT_MAX;
+  for (const b of out) {
+    if (b.type !== "text") continue;
+    if (b.text.length > budget) b.text = b.text.slice(0, Math.max(0, budget)) + "\n...(truncated)";
+    budget -= b.text.length;
+  }
+  return out;
+}
+
+const preview = (v, n) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s && s.length > n ? s.slice(0, n) + "..." : (s || ""); };
+
+// What the model is told about tools. Without this it guesses at paths,
+// skips required params, or invents results.
+function toolGuidance() {
+  const os = require("os");
+  const ready = [...mcpClients.values()].filter(c => c.status === "ready" && c.tools.length);
+  const where = IS_WIN ? "Windows" : process.platform === "darwin" ? "macOS" : "Linux";
+  return [
+    "## Tools",
+    "You can call tools from MCP servers running on the user's own computer (" + where +
+      ", user \"" + os.userInfo().username + "\", home folder " + os.homedir() + ").",
+    "Connected: " + ready.map(c => c.name + " (" + c.tools.length + " tools)").join(", ") + ".",
+    "- Use a tool when the request needs live data or an action on this machine; otherwise just answer.",
+    "- Fill in every required parameter. Use full absolute paths" + (IS_WIN ? " in Windows form, e.g. C:\\Users\\..." : "") + ".",
+    "- Independent calls can go in the same turn; chain calls when one needs another's result.",
+    "- If a tool returns an error, read it, fix the arguments and retry once before reporting the problem.",
+    "- The user approves each call. If one is declined, don't retry it; say what you would have done.",
+    "- Base answers on what tools actually returned. Never invent tool output.",
+    ...ready.flatMap(c => {
+      const notes = ((mcpConfig.mcpServers[c.name] || {}).notes || "").trim();
+      if (!c.instructions && !notes) return [];
+      return ["", "### " + c.name,
+        ...(c.instructions ? ["Server instructions: " + c.instructions.slice(0, 3000)] : []),
+        ...(notes ? ["The user's notes (follow these): " + notes] : [])];
+    }),
+  ].join("\n");
+}
+
+// The front end keeps each reply's tool trace on the message. Fold a short
+// note of it back into history so follow-ups ("open the second one") work.
+function withToolNotes(messages) {
+  return (messages || []).map(m => {
+    if (!m || m.role !== "assistant" || !Array.isArray(m.tools) || !m.tools.length) return m;
+    const notes = m.tools.map(t => "- " + t.server + "/" + t.tool + " " + (t.input || "") + " -> " + t.status +
+      (t.output ? ": " + String(t.output).slice(0, 300) : "")).join("\n");
+    return { role: "assistant", content: (m.content || "") + "\n\n[Tools used for this reply]\n" + notes };
+  });
+}
+
+// One chat turn with tools. Sessions pause when a call needs approval and
+// resume through POST /api/chat/continue.
+const toolSessions = new Map();
+
+async function toolStep(sess) {
+  let lastText = "";
+  while (sess.rounds < MAX_TOOL_ROUNDS) {
+    sess.rounds++;
+    const data = await anthropicRequest(sess.system, sess.convo, sess.model, toolDefs());
+    const content = data.content || [];
+    sess.convo.push({ role: "assistant", content });
+    lastText = content.filter(b => b.type === "text").map(b => b.text).join("");
+    const uses = content.filter(b => b.type === "tool_use");
+    if (!uses.length) return finishTurn(sess, lastText);
+
+    sess.calls = uses.map(u => {
+      const t = toolIndex.get(u.name);
+      return { id: u.id, server: t && t.server, tool: t ? t.tool : u.name, input: u.input || {},
+               missing: !t, needsApproval: !!t && !isAlwaysAllowed(t.server, t.tool) };
+    });
+    if (sess.calls.some(c => c.needsApproval)) {
+      for (const [k, s] of toolSessions) if (Date.now() - s.ts > 15 * 60000) toolSessions.delete(k);
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      sess.ts = Date.now();
+      toolSessions.set(id, sess);
+      return {
+        pending: { id, calls: sess.calls.filter(c => c.needsApproval).map(c => ({ id: c.id, server: c.server, tool: c.tool, input: c.input })) },
+        tools: sess.trace,
+      };
+    }
+    await runCalls(sess, {});
+  }
+  return finishTurn(sess, (lastText ? lastText + "\n\n" : "") + "(Stopped after " + MAX_TOOL_ROUNDS + " tool rounds.)");
+}
+
+async function runCalls(sess, decisions) {
+  const results = [];
+  let changed = false;
+  for (const c of sess.calls) {
+    const d = decisions[c.id];
+    const entry = { server: c.server || "?", tool: c.tool, input: preview(c.input, 400) };
+    if (c.missing) {
+      Object.assign(entry, { status: "error", output: "unknown tool" });
+      results.push({ type: "tool_result", tool_use_id: c.id, is_error: true, content: "Unknown tool: " + c.tool });
+    } else if (c.needsApproval && d !== "allow" && d !== "always") {
+      Object.assign(entry, { status: "denied", output: "" });
+      results.push({ type: "tool_result", tool_use_id: c.id, is_error: true, content: "The user declined to run this tool." });
+    } else {
+      if (d === "always") {
+        const cfg = mcpConfig.mcpServers[c.server];
+        if (cfg) { cfg.alwaysAllow = Array.from(new Set([...(cfg.alwaysAllow || []), c.tool])); changed = true; }
+      }
+      try {
+        const client = mcpClients.get(c.server);
+        if (!client || client.status !== "ready") throw new Error(c.server + " is not running");
+        const r = await client.callTool(c.tool, c.input);
+        const blocks = toAnthropicContent(r);
+        Object.assign(entry, { status: r.isError ? "error" : "ok", output: preview(blocks.map(b => b.text || "[" + b.type + "]").join("\n"), 600) });
+        results.push({ type: "tool_result", tool_use_id: c.id, is_error: !!r.isError, content: blocks });
+      } catch (e) {
+        Object.assign(entry, { status: "error", output: e.message });
+        results.push({ type: "tool_result", tool_use_id: c.id, is_error: true, content: "Tool failed: " + e.message });
+      }
+    }
+    sess.trace.push(entry);
+  }
+  if (changed) saveMcpConfig();
+  sess.convo.push({ role: "user", content: results });
+  sess.calls = null;
+}
+
+function finishTurn(sess, text) {
+  const reply = text || "(no text reply)";
+  const toStore = [];
+  if (sess.lastUser) toStore.push(sess.lastUser);
+  toStore.push({ role: "assistant", content: reply });
+  remember(toStore, sess.chatId, sess.projectId);
+  return { reply, tools: sess.trace };
+}
+
+async function continueChat(body) {
+  const sess = toolSessions.get(body.id);
+  if (!sess) throw new Error("approval expired - send the message again");
+  toolSessions.delete(body.id);
+  await runCalls(sess, body.decisions || {});
+  return toolStep(sess);
+}
+
+function mcpSummary() {
+  return {
+    configFile: MCP_FILE,
+    claudeDesktopConfig: fs.existsSync(claudeDesktopConfigPath()),
+    toolsActive: activeBackend() === "anthropic",
+    servers: Object.entries(mcpConfig.mcpServers).map(([name, cfg]) => {
+      const c = mcpClients.get(name);
+      return {
+        name, command: cfg.command, args: cfg.args || [], enabled: cfg.enabled !== false,
+        notes: cfg.notes || "", instructions: c ? (c.instructions || "").slice(0, 500) : "",
+        status: c ? c.status : "off", error: c ? c.error : null,
+        tools: c ? c.tools.map(t => ({
+          name: t.name, description: (t.description || "").slice(0, 200), alwaysAllow: isAlwaysAllowed(name, t.name),
+          params: Object.keys((t.inputSchema && t.inputSchema.properties) || {}),
+        })) : [],
+      };
+    }),
+  };
+}
+
+// Accepts {"mcpServers":{...}}, {"name":{command,...}} or a bare {command,...} (needs name)
+function normalizeServers(input, name) {
+  if (!input || typeof input !== "object") throw new Error("expected a JSON object");
+  if (input.mcpServers) return input.mcpServers;
+  if (input.command) { if (!name) throw new Error("give the server a name"); return { [name]: input }; }
+  return input;
+}
+
+async function addServers(servers, { enabled, overwrite }) {
+  const added = [];
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (!cfg || typeof cfg.command !== "string") continue;   // skip remote/url entries this client can't run
+    if (mcpConfig.mcpServers[name] && !overwrite) continue;
+    const prev = mcpConfig.mcpServers[name] || {};
+    mcpConfig.mcpServers[name] = { ...portable(cfg), enabled, alwaysAllow: cfg.alwaysAllow || prev.alwaysAllow || [],
+      ...((cfg.notes || prev.notes) ? { notes: cfg.notes || prev.notes } : {}) };
+    const c = mcpClients.get(name); if (c) { c.stop(); mcpClients.delete(name); }
+    added.push(name);
+  }
+  saveMcpConfig();
+  await syncMcp();
+  return added;
+}
+
+function readJson(req, limit) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.on("data", c => { raw += c; if (raw.length > (limit || 1e6)) req.destroy(); });
+    req.on("end", () => { try { resolve(JSON.parse(raw || "{}")); } catch (e) { reject(e); } });
+    req.on("error", reject);
+  });
+}
+
+// Routes under /api/mcp. Returns true if handled.
+function handleMcpRoute(req, res) {
+  const u = new URL(req.url, "http://localhost");
+  if (!u.pathname.startsWith("/api/mcp")) return false;
+  const parts = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);   // api, mcp, ...
+  const ok = () => sendJson(res, 200, mcpSummary());
+  const bad = e => sendJson(res, 400, { error: String((e && e.message) || e) });
+
+  (async () => {
+    if (req.method === "GET" && parts.length === 2) return ok();
+
+    // POST /api/mcp/servers  { config: <json>, name? }  -> add (enabled)
+    if (req.method === "POST" && parts[2] === "servers" && parts.length === 3) {
+      const body = await readJson(req);
+      const servers = normalizeServers(body.config, body.name);
+      const added = await addServers(servers, { enabled: true, overwrite: true });
+      if (!added.length) throw new Error("no runnable servers found (each needs a \"command\")");
+      return ok();
+    }
+
+    // POST /api/mcp/import  -> pull everything from Claude Desktop's config, disabled
+    if (req.method === "POST" && parts[2] === "import") {
+      const p = claudeDesktopConfigPath();
+      if (!fs.existsSync(p)) throw new Error("Claude Desktop config not found at " + p);
+      const servers = normalizeServers(JSON.parse(fs.readFileSync(p, "utf8")));
+      await addServers(servers, { enabled: false, overwrite: false });
+      return ok();
+    }
+
+    // /api/mcp/servers/:name/(enable|disable|restart)  and  DELETE /api/mcp/servers/:name
+    if (parts[2] === "servers" && parts[3]) {
+      const name = parts[3];
+      const cfg = mcpConfig.mcpServers[name];
+      if (!cfg) throw new Error("no server named " + name);
+      const action = parts[4];
+      if (req.method === "DELETE" && !action) {
+        delete mcpConfig.mcpServers[name];
+      } else if (req.method === "POST" && (action === "enable" || action === "disable")) {
+        cfg.enabled = action === "enable";
+      } else if (req.method === "POST" && action === "restart") {
+        const c = mcpClients.get(name); if (c) { c.stop(); mcpClients.delete(name); }
+        cfg.enabled = true;
+      } else if (req.method === "POST" && action === "forget-approvals") {
+        cfg.alwaysAllow = [];
+      } else if (req.method === "POST" && action === "notes") {
+        cfg.notes = String((await readJson(req)).notes || "").trim().slice(0, 2000);
+        saveMcpConfig();
+        return ok();   // notes only change the prompt; no restart needed
+      } else { res.writeHead(404); return res.end("not found"); }
+      saveMcpConfig();
+      await syncMcp();
+      return ok();
+    }
+    res.writeHead(404); res.end("not found");
+  })().catch(bad);
+  return true;
+}
+
+// Full chat turn: recall -> augment -> model (+ tools) -> remember.
 async function handleChat(body) {
-  const messages = body.messages || [];
+  const messages = withToolNotes(body.messages || []);
   const model = body.model;
   const chatId = body.chatId || "default";
   const projectId = body.projectId || null;
@@ -449,18 +971,28 @@ async function handleChat(body) {
   if (persona) prefix.push({ role: "system", content: persona });
   if (context) prefix.push({ role: "system", content: context });
   const augmented = prefix.length ? [...prefix, ...messages] : messages;
+  const lastUser = [...messages].reverse().find(m => m && m.role === "user");
+
+  // Tools available and the backend can use them -> agentic turn
+  if (activeBackend() === "anthropic" && toolDefs().length) {
+    return toolStep({
+      system: [...prefix.map(m => m.content), toolGuidance()].join("\n\n"),
+      convo: sanitize(messages).filter(m => m.role !== "system"),
+      model, trace: [], rounds: 0, chatId, projectId,
+      lastUser: lastUser ? { role: "user", content: lastUser.content } : null,
+    });
+  }
 
   const reply = await generateReply(augmented, model);
 
   // store only the new turns this round (front end resends full history each call,
   // so persisting everything every time would duplicate massively).
-  const lastUser = [...messages].reverse().find(m => m && m.role === "user");
   const toStore = [];
   if (lastUser) toStore.push(lastUser);
   toStore.push({ role: "assistant", content: reply });
   remember(toStore, chatId, projectId);
 
-  return reply;
+  return { reply };
 }
 
 function sendJson(res, status, obj) {
@@ -486,20 +1018,15 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.method === "POST" && req.url === "/api/chat") {
-    let raw = "";
-    req.on("data", c => { raw += c; if (raw.length > 1e6) req.destroy(); });
-    req.on("end", async () => {
-      try {
-        const body = JSON.parse(raw || "{}");
-        const reply = await handleChat(body);
-        sendJson(res, 200, { reply });
-      } catch (err) {
-        sendJson(res, 500, { error: String((err && err.message) || err) });
-      }
-    });
+  if (req.method === "POST" && (req.url === "/api/chat" || req.url === "/api/chat/continue")) {
+    readJson(req, 5e6)
+      .then(body => req.url === "/api/chat" ? handleChat(body) : continueChat(body))
+      .then(out => sendJson(res, 200, out))
+      .catch(err => sendJson(res, 500, { error: String((err && err.message) || err) }));
     return;
   }
+  if (handleMcpRoute(req, res)) return;
+  if (req.url === "/favicon.ico") { res.writeHead(204); res.end(); return; }   // no icon; skip the console 404
   // UI state: everything the interface needs to redraw after a refresh
   if (req.url === "/api/state") {
     if (req.method === "GET") { sendJson(res, 200, loadState()); return; }
@@ -546,4 +1073,11 @@ server.listen(PORT, () => {
   console.log("model backend: " + activeBackend());
   console.log("embeddings: " + (EMBED_ID ? EMBED_ID + " (" + vectors.size + " vectors loaded)" : "off - keyword-only recall"));
   indexPending();   // backfill any turns that have no vector yet
+  const n = Object.values(mcpConfig.mcpServers).filter(c => c.enabled !== false).length;
+  if (n) syncMcp().then(() => {
+    const ready = [...mcpClients.values()].filter(c => c.status === "ready");
+    console.log("mcp: " + ready.length + "/" + n + " servers ready, " + ready.reduce((a, c) => a + c.tools.length, 0) + " tools" +
+      (activeBackend() === "anthropic" ? "" : " (tools only run on the Anthropic backend)"));
+    for (const c of mcpClients.values()) if (c.status === "error") console.log("  mcp " + c.name + ": " + c.error);
+  });
 });

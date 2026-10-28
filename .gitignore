@@ -5,6 +5,9 @@ memory.*.json
 # UI state — your chats, projects and settings. Local to each machine.
 state.json
 
+# MCP servers — installed per machine, and env blocks can hold tokens.
+mcp.json
+
 # Environment / secrets
 .env
 .env.*
@@ -31,3 +34,6 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Local screenshots / scratch from AI sessions
+Claude outputs/
