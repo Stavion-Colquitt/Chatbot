@@ -162,7 +162,8 @@ Its tool interface is modeled on the official
 
 **Portable paths.** Config values can use `${HOME}`, `~`, `%VAR%` or `${VAR}`;
 they're expanded when the server starts. `${APP_DIR}` is the folder this
-repo is cloned into. Imported and pasted configs get this
+repo is cloned into; `${CONFIG_DIR}` is the folder holding `mcp.json` — handy
+when `MCP_FILE` points at a config kept in its own repo next to your servers. Imported and pasted configs get this
 machine's home folder rewritten to `${HOME}` automatically, so if your servers
 live at the same place under your home folder on every machine, the same
 `mcp.json` works everywhere:

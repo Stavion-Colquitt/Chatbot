@@ -479,6 +479,7 @@ function expandVars(v) {
       const k = a || b;
       if (k === "HOME") return HOME_DIR;
       if (k === "APP_DIR") return __dirname;         // wherever this repo is cloned
+      if (k === "CONFIG_DIR") return path.dirname(path.resolve(MCP_FILE));   // folder holding mcp.json
       const hit = Object.keys(process.env).find(e => IS_WIN ? e.toUpperCase() === k.toUpperCase() : e === k);
       return hit ? process.env[hit] : m;            // unknown variable: leave it visible
     });
