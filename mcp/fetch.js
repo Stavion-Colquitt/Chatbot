@@ -9,6 +9,12 @@
 //   node mcp/fetch.js
 //
 // Env: FETCH_USER_AGENT, FETCH_TIMEOUT_MS (20000), FETCH_MAX_BYTES (5 MB).
+//
+// Credit: the tool interface (name `fetch`; url / max_length / start_index / raw;
+// chunked reading via start_index) follows the official Fetch reference server,
+// https://github.com/modelcontextprotocol/servers/tree/main/src/fetch
+// (MIT License, (c) Anthropic, PBC). That server is Python; this is an
+// independent zero-dependency JavaScript implementation -- no code was copied.
 
 const VERSION = "1.0.0";
 const USER_AGENT = process.env.FETCH_USER_AGENT || "Mozilla/5.0 (compatible; chatbot-fetch/" + VERSION + ")";

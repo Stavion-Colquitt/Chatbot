@@ -156,6 +156,9 @@ first time the server starts on a machine; remove it in Options and it stays
 removed. Fetched pages are labelled as untrusted content, and every call still
 goes through approval. It's a plain MCP server, so Claude Desktop can use it
 too: `{"command": "node", "args": ["<repo>/mcp/fetch.js"]}`.
+Its tool interface is modeled on the official
+[Fetch reference server](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
+— see [Credits](#credits).
 
 **Portable paths.** Config values can use `${HOME}`, `~`, `%VAR%` or `${VAR}`;
 they're expanded when the server starts. `${APP_DIR}` is the folder this
@@ -217,6 +220,19 @@ mcp/fetch.js         bundled Fetch MCP server (zero dependencies)
 mcp.json             your MCP servers, gitignored
 state.json           created on first run, gitignored
 ```
+
+## Credits
+
+- **Fetch** (`mcp/fetch.js`) — the tool interface (`url`, `max_length`,
+  `start_index`, `raw`, chunked reading) follows the official
+  [Fetch MCP server](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
+  from `modelcontextprotocol/servers`, MIT License, © Anthropic, PBC. This
+  repo's version is an independent JavaScript implementation; no code was copied.
+- **Model Context Protocol** — the MCP client in `server.js` implements the
+  [MCP specification](https://modelcontextprotocol.io/specification) (stdio
+  transport, JSON-RPC).
+- **Config format** — `mcp.json` uses the same `mcpServers` shape as Claude
+  Desktop's config so servers can be imported as-is.
 
 ## Notes
 
